@@ -1,0 +1,64 @@
+{
+  "name": "agent-console",
+  "displayName": "Agent Console",
+  "description": "VS Code companion extension for local coding agents: kickoff prompts, live activity, and an operator console.",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "sirjamesoffordii",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sirjamesoffordii/Agent-Console.git"
+  },
+  "homepage": "https://github.com/sirjamesoffordii/Agent-Console",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:agentConsole.openConsole"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "agentConsole.openConsole",
+        "title": "Agent Console: Open Console",
+        "category": "Agent Console"
+      }
+    ],
+    "configuration": {
+      "title": "Agent Console",
+      "properties": {
+        "agentConsole.role": {
+          "type": "string",
+          "default": "",
+          "description": "Canonical role id for this VS Code window. If unset, Agent Console falls back to AGENT_CONSOLE_ROLE / PARTNER_PATH_ROLE or infers from roles.json userDataDir entries."
+        },
+        "agentConsole.agentStateDir": {
+          "type": "string",
+          "default": ".agent",
+          "description": "Relative path from the repo root to the shared agent state directory."
+        },
+        "agentConsole.rolesFile": {
+          "type": "string",
+          "default": ".github/agents/roles.json",
+          "description": "Relative path from the repo root to the role manifest."
+        },
+        "agentConsole.issueUrlTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Optional issue-link template used by the console. Use {issue} as the placeholder, for example https://github.com/owner/repo/issues/{issue}."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p ./",
+    "package": "npx @vscode/vsce package --allow-missing-repository --skip-license -o dist/agent-console.vsix"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}
