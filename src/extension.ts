@@ -141,10 +141,49 @@ function defaultPromptFor(role: string): string {
 }
 
 async function openChatWithPrompt(prompt: string): Promise<void> {
-  try {
-    await vscode.commands.executeCommand('workbench.action.chat.open', { query: prompt });
-  } catch {
-    await vscode.commands.executeCommand('workbench.action.chat.open', prompt);
+  // Strategy: try the newest, most reliable command first; fall back through
+  // older signatures. Each attempt is wrapped so one failure doesn't abort
+  // the chain. The goal: both insert the prompt AND submit it.
+
+  // 1) Chat API command (recent VS Code): opens panel, inserts query, and
+  //    when isPartialQuery is false it auto-submits.
+  const tryOpen = async (arg: unknown): Promise<boolean> => {
+    try {
+      await vscode.commands.executeCommand('workbench.action.chat.open', arg);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const opened =
+    (await tryOpen({ query: prompt, isPartialQuery: false })) ||
+    (await tryOpen({ query: prompt })) ||
+    (await tryOpen(prompt));
+
+  if (!opened) {
+    // Last-resort: just focus the chat view so the operator sees something.
+    try { await vscode.commands.executeCommand('workbench.action.chat.focus'); } catch { /* noop */ }
+    return;
+  }
+
+  // Some VS Code builds accept `query` but do NOT auto-submit — they leave
+  // the text in the input box. Belt-and-braces: try known submit commands.
+  // Wait one frame for the chat view to finish rendering the input.
+  await new Promise((resolve) => setTimeout(resolve, 400));
+
+  const submitCommands = [
+    'workbench.action.chat.submit',
+    'workbench.action.chat.sendToNewChat',
+    'github.copilot.chat.submit',
+  ];
+  for (const cmd of submitCommands) {
+    try {
+      await vscode.commands.executeCommand(cmd);
+      return;
+    } catch {
+      // try next
+    }
   }
 }
 

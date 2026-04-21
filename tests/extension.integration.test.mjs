@@ -221,7 +221,7 @@ await (async () => {
   ok('watching status set', vscodeStub.window.statusBar.text.includes('kickoff watching'));
 
   // Let the immediate tick run (extension.activate calls void tick() synchronously but await is needed)
-  await new Promise((r) => setTimeout(r, 50));
+  await new Promise((r) => setTimeout(r, 900));
 
   const chatOpened = vscodeStub._chatCalls.find((c) => c.id === 'workbench.action.chat.open');
   ok('chat.open invoked', !!chatOpened);
