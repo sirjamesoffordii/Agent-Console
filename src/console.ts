@@ -12,6 +12,7 @@
  *   - `<agentStateDir>/agent-control.json`
  */
 
+import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -29,6 +30,7 @@ type RoleEntry = {
   spawnScript?: string;
   ghConfigDir?: string;
   userDataDir?: string;
+  agentFile?: string;
 };
 
 type RolesFile = { version?: number; roles?: RoleEntry[] };
@@ -62,6 +64,10 @@ type RowSnapshot = {
   ghAccount: string;
   ghAccountOk: boolean;
   promptOverride: string;
+  windowOpen: boolean;
+  agentFileOk: boolean;
+  agentFileName: string;
+  chatState: 'busy' | 'idle' | 'stale' | 'unknown';
 };
 
 const PANEL_ID = 'agentConsole.panel';
@@ -102,6 +108,52 @@ function writeControl(repoRoot: string, agentStateDir: string, ctrl: AgentContro
   const tmp = file + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(ctrl, null, 2), 'utf8');
   fs.renameSync(tmp, file);
+}
+
+// ---------------------------------------------------------------------------
+// Window + agent-file detection (Windows-only, cached 4s)
+// ---------------------------------------------------------------------------
+
+let _windowCache: { at: number; cmdLines: string[] } = { at: 0, cmdLines: [] };
+const WINDOW_CACHE_TTL_MS = 4_000;
+
+function listInsidersCmdLines(): string[] {
+  if (process.platform !== 'win32') return [];
+  const now = Date.now();
+  if (now - _windowCache.at < WINDOW_CACHE_TTL_MS) return _windowCache.cmdLines;
+  try {
+    const out = cp.execFileSync(
+      'wmic',
+      ['process', 'where', "name='Code - Insiders.exe'", 'get', 'CommandLine', '/format:list'],
+      { encoding: 'utf8', timeout: 3_000, stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    const cmdLines = out
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('CommandLine='))
+      .map((line) => line.substring('CommandLine='.length));
+    _windowCache = { at: now, cmdLines };
+    return cmdLines;
+  } catch {
+    _windowCache = { at: now, cmdLines: [] };
+    return [];
+  }
+}
+
+function isWindowOpen(userDataDir?: string): boolean {
+  if (!userDataDir) return false;
+  const a = userDataDir.replace(/\//g, '\\').toLowerCase();
+  const b = userDataDir.replace(/\\/g, '/').toLowerCase();
+  return listInsidersCmdLines().some((cmd) => {
+    const lc = cmd.toLowerCase();
+    return lc.includes(a) || lc.includes(b);
+  });
+}
+
+function checkAgentFile(repoRoot: string, agentFile?: string): { ok: boolean; name: string } {
+  if (!agentFile) return { ok: false, name: '' };
+  const full = resolveRepoPath(repoRoot, agentFile);
+  return { ok: fs.existsSync(full), name: path.basename(agentFile, path.extname(agentFile)) };
 }
 
 function readGhAccount(ghConfigDir?: string): { login: string; ok: boolean } {
@@ -213,6 +265,14 @@ function snapshot(repoRoot: string, role: RoleEntry, options: ConsoleOptions): R
 
   const ghAcct = readGhAccount(role.ghConfigDir);
   const promptOverride = readPromptOverride(repoRoot, options.agentStateDir, role.id);
+  const windowOpen = isWindowOpen(role.userDataDir);
+  const agentFileInfo = checkAgentFile(repoRoot, role.agentFile);
+
+  let chatState: RowSnapshot['chatState'] = 'unknown';
+  if (ageSec < 0) chatState = 'unknown';
+  else if (ageSec <= 30) chatState = 'busy';
+  else if (ageSec <= STALE_SEC) chatState = 'idle';
+  else chatState = 'stale';
 
   return {
     role: role.id,
@@ -232,6 +292,10 @@ function snapshot(repoRoot: string, role: RoleEntry, options: ConsoleOptions): R
     ghAccount: ghAcct.login,
     ghAccountOk: ghAcct.ok,
     promptOverride,
+    windowOpen,
+    agentFileOk: agentFileInfo.ok,
+    agentFileName: agentFileInfo.name,
+    chatState,
   };
 }
 
@@ -260,6 +324,24 @@ function renderHtml(rows: RowSnapshot[], nonce: string, issueUrlTemplate?: strin
     const acctCell = row.ghAccount
       ? `${acctDot}<code>${escapeHtml(row.ghAccount)}</code>`
       : `${acctDot}<small>—</small>`;
+    const windowCell = row.windowOpen
+      ? '<span class="dot green"></span><strong>Open</strong>'
+      : '<span class="dot red"></span><small>Closed</small>';
+    const agentCell = row.agentFileOk
+      ? `<span class="dot green"></span><code>${escapeHtml(row.agentFileName)}</code>`
+      : `<span class="dot red"></span><small>${escapeHtml(row.agentFileName || 'missing')}</small>`;
+    const chatLabel = row.paused
+      ? 'paused'
+      : row.chatState === 'busy' ? 'Busy'
+      : row.chatState === 'idle' ? 'Idle'
+      : row.chatState === 'stale' ? 'Stale'
+      : '—';
+    const chatDotClass = row.paused ? 'amber'
+      : row.chatState === 'busy' ? 'green'
+      : row.chatState === 'idle' ? 'amber'
+      : row.chatState === 'stale' ? 'red'
+      : 'amber';
+    const chatCell = `<span class="dot ${chatDotClass}"></span><strong>${chatLabel}</strong><br/><small>${escapeHtml(ageText)}</small>`;
     const pauseLabel = row.paused ? 'Resume' : 'Pause';
     const pauseAction = row.paused ? 'resume' : 'pause';
     const promptId = `prompt-${row.role}`;
@@ -267,10 +349,11 @@ function renderHtml(rows: RowSnapshot[], nonce: string, issueUrlTemplate?: strin
     return `<tr>
       <td>${dot}<strong>${escapeHtml(row.shortId)}</strong><br/><small>${escapeHtml(row.displayName)}</small></td>
       <td>${acctCell}</td>
-      <td>${escapeHtml(row.status)}${row.paused ? ' <em>(paused)</em>' : ''}</td>
+      <td>${windowCell}</td>
+      <td>${agentCell}</td>
+      <td>${chatCell}</td>
       <td>${issueCell(row.issue, row.role, issueUrlTemplate)}</td>
       <td><code>${escapeHtml(row.branch || '—')}</code></td>
-      <td>${escapeHtml(ageText)}<br/><small>${escapeHtml(row.lastActivityIso)}</small></td>
       <td>${ghCell}</td>
       <td><small>${escapeHtml(row.stopReason || '—')}</small></td>
       <td class="prompt-cell">
@@ -319,9 +402,9 @@ function renderHtml(rows: RowSnapshot[], nonce: string, issueUrlTemplate?: strin
 <h1>${PANEL_TITLE}</h1>
 <table>
   <thead>
-    <tr><th>Role</th><th>GH Account</th><th>Status</th><th>Issue</th><th>Branch</th><th>Last Activity</th><th>GH (core)</th><th>Stop Reason</th><th>Next Prompt &amp; Controls</th></tr>
+    <tr><th>Role</th><th>GH Account</th><th>Window</th><th>Custom Agent</th><th>Chat</th><th>Issue</th><th>Branch</th><th>GH (core)</th><th>Stop Reason</th><th>Next Prompt &amp; Controls</th></tr>
   </thead>
-  <tbody>${body || '<tr><td colspan="9">No roles registered.</td></tr>'}</tbody>
+  <tbody>${body || '<tr><td colspan="10">No roles registered.</td></tr>'}</tbody>
 </table>
 <div class="footer">Auto-refresh every 5s · ${escapeHtml(new Date().toISOString())}</div>
 <script nonce="${nonce}">
