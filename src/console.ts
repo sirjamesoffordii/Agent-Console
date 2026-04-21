@@ -123,7 +123,10 @@ function writeControl(repoRoot: string, agentStateDir: string, ctrl: AgentContro
 // ---------------------------------------------------------------------------
 
 let _windowCache: { at: number; cmdLines: string[] } = { at: 0, cmdLines: [] };
-const WINDOW_CACHE_TTL_MS = 4_000;
+// Cache the window list for longer than the 5s UI refresh so we only shell
+// out to PowerShell once every ~2-3 polls. The data changes slowly (windows
+// opening/closing), so a stale read is fine and it keeps background CPU down.
+const WINDOW_CACHE_TTL_MS = 12_000;
 
 function listInsidersCmdLines(): string[] {
   if (process.platform !== 'win32') return [];
@@ -143,6 +146,9 @@ function listInsidersCmdLines(): string[] {
         encoding: 'utf8',
         timeout: 4_000,
         stdio: ['ignore', 'pipe', 'ignore'],
+        // Without this, each invocation flashes a conhost/PowerShell window
+        // on top of the user's screen every refresh cycle.
+        windowsHide: true,
       });
     } catch {
       return null;

@@ -5,6 +5,11 @@ All notable changes to the **Agent Console** extension will be documented in thi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9] - 2026-04-21
+
+### Fixed
+- Windows: the PowerShell window-detection probe no longer flashes a console window on every refresh. Added `windowsHide: true` to the `execFileSync` call and bumped the window-cache TTL from 4s to 12s so the probe runs at most every ~12s instead of every poll.
+
 ## [0.1.8] - 2026-04-21
 
 ### Fixed
