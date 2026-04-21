@@ -27,6 +27,8 @@ type RoleEntry = {
   shortId: string;
   displayName: string;
   spawnScript?: string;
+  ghConfigDir?: string;
+  userDataDir?: string;
 };
 
 type RolesFile = { version?: number; roles?: RoleEntry[] };
@@ -57,6 +59,9 @@ type RowSnapshot = {
   health: 'green' | 'amber' | 'red';
   ghCore: string;
   ghCoreLevel: 'ok' | 'warn' | 'crit' | 'unknown';
+  ghAccount: string;
+  ghAccountOk: boolean;
+  promptOverride: string;
 };
 
 const PANEL_ID = 'agentConsole.panel';
@@ -96,6 +101,48 @@ function writeControl(repoRoot: string, agentStateDir: string, ctrl: AgentContro
   const file = path.join(dir, 'agent-control.json');
   const tmp = file + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(ctrl, null, 2), 'utf8');
+  fs.renameSync(tmp, file);
+}
+
+function readGhAccount(ghConfigDir?: string): { login: string; ok: boolean } {
+  if (!ghConfigDir) return { login: '', ok: false };
+  try {
+    const hostsFile = path.join(ghConfigDir, 'hosts.yml');
+    if (!fs.existsSync(hostsFile)) return { login: '', ok: false };
+    const text = fs.readFileSync(hostsFile, 'utf8');
+    // naive yaml: find first `user:` line under github.com
+    const match = text.match(/user:\s*([^\s\r\n]+)/);
+    if (match) return { login: match[1], ok: true };
+    return { login: '', ok: false };
+  } catch {
+    return { login: '', ok: false };
+  }
+}
+
+function promptOverridePath(repoRoot: string, agentStateDir: string, role: string): string {
+  return path.join(repoRoot, agentStateDir, role, 'prompt-override.txt');
+}
+
+function readPromptOverride(repoRoot: string, agentStateDir: string, role: string): string {
+  try {
+    const file = promptOverridePath(repoRoot, agentStateDir, role);
+    if (!fs.existsSync(file)) return '';
+    return fs.readFileSync(file, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+function writePromptOverride(repoRoot: string, agentStateDir: string, role: string, text: string): void {
+  const dir = path.join(repoRoot, agentStateDir, role);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const file = promptOverridePath(repoRoot, agentStateDir, role);
+  if (text.trim() === '') {
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+    return;
+  }
+  const tmp = file + '.tmp';
+  fs.writeFileSync(tmp, text, 'utf8');
   fs.renameSync(tmp, file);
 }
 
@@ -164,6 +211,9 @@ function snapshot(repoRoot: string, role: RoleEntry, options: ConsoleOptions): R
   else if (ageSec >= 0 && ageSec <= STALE_SEC) health = 'green';
   else if (ageSec > STALE_SEC) health = 'red';
 
+  const ghAcct = readGhAccount(role.ghConfigDir);
+  const promptOverride = readPromptOverride(repoRoot, options.agentStateDir, role.id);
+
   return {
     role: role.id,
     shortId: role.shortId,
@@ -179,6 +229,9 @@ function snapshot(repoRoot: string, role: RoleEntry, options: ConsoleOptions): R
     health,
     ghCore,
     ghCoreLevel,
+    ghAccount: ghAcct.login,
+    ghAccountOk: ghAcct.ok,
+    promptOverride,
   };
 }
 
@@ -203,10 +256,17 @@ function renderHtml(rows: RowSnapshot[], nonce: string, issueUrlTemplate?: strin
     const ageText = row.ageSec < 0 ? 'no data' : `${row.ageSec}s ago`;
     const dot = `<span class="dot ${row.health}"></span>`;
     const ghCell = `<span class="gh ${row.ghCoreLevel}">${escapeHtml(row.ghCore)}</span>`;
+    const acctDot = row.ghAccountOk ? '<span class="dot green"></span>' : '<span class="dot red"></span>';
+    const acctCell = row.ghAccount
+      ? `${acctDot}<code>${escapeHtml(row.ghAccount)}</code>`
+      : `${acctDot}<small>—</small>`;
     const pauseLabel = row.paused ? 'Resume' : 'Pause';
     const pauseAction = row.paused ? 'resume' : 'pause';
+    const promptId = `prompt-${row.role}`;
+    const promptVal = escapeHtml(row.promptOverride);
     return `<tr>
       <td>${dot}<strong>${escapeHtml(row.shortId)}</strong><br/><small>${escapeHtml(row.displayName)}</small></td>
+      <td>${acctCell}</td>
       <td>${escapeHtml(row.status)}${row.paused ? ' <em>(paused)</em>' : ''}</td>
       <td>${issueCell(row.issue, row.role, issueUrlTemplate)}</td>
       <td><code>${escapeHtml(row.branch || '—')}</code></td>
@@ -216,8 +276,15 @@ function renderHtml(rows: RowSnapshot[], nonce: string, issueUrlTemplate?: strin
       <td><small>${escapeHtml(row.nextPromptPreview || '—')}</small></td>
       <td>
         <button data-act="${pauseAction}" data-role="${row.role}">${pauseLabel}</button>
-        <button data-act="poke" data-role="${row.role}">Poke</button>
-        <button data-act="restart" data-role="${row.role}">Restart</button>
+        <button data-act="poke" data-role="${row.role}" title="Send a chat re-kick to the existing window only">Poke</button>
+        <button data-act="restart" data-role="${row.role}" title="Launch Insiders if closed, or re-kick chat if open">Restart</button>
+      </td>
+      <td class="prompt-cell">
+        <textarea id="${promptId}" data-role="${row.role}" rows="2" placeholder="Optional prompt override (sent on Send / Restart)">${promptVal}</textarea>
+        <div class="prompt-actions">
+          <button data-act="send-prompt" data-role="${row.role}">Send</button>
+          <button data-act="clear-prompt" data-role="${row.role}">Clear</button>
+        </div>
       </td>
     </tr>`;
   }).join('\n');
@@ -245,15 +312,18 @@ function renderHtml(rows: RowSnapshot[], nonce: string, issueUrlTemplate?: strin
   button { margin-right: 4px; padding: 2px 8px; cursor: pointer; }
   a { color: var(--vscode-textLink-foreground); }
   .footer { margin-top: 12px; font-size: 11px; opacity: 0.7; }
+  textarea { width: 100%; min-width: 200px; font-family: var(--vscode-editor-font-family); font-size: 11px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, #444); padding: 2px 4px; resize: vertical; }
+  .prompt-cell { min-width: 220px; }
+  .prompt-actions { margin-top: 2px; }
 </style>
 </head>
 <body>
 <h1>${PANEL_TITLE}</h1>
 <table>
   <thead>
-    <tr><th>Role</th><th>Status</th><th>Issue</th><th>Branch</th><th>Last Activity</th><th>GH (core)</th><th>Stop Reason</th><th>Next Prompt</th><th>Actions</th></tr>
+    <tr><th>Role</th><th>GH Account</th><th>Status</th><th>Issue</th><th>Branch</th><th>Last Activity</th><th>GH (core)</th><th>Stop Reason</th><th>Next Prompt</th><th>Actions</th><th>Prompt Override</th></tr>
   </thead>
-  <tbody>${body || '<tr><td colspan="9">No roles registered.</td></tr>'}</tbody>
+  <tbody>${body || '<tr><td colspan="11">No roles registered.</td></tr>'}</tbody>
 </table>
 <div class="footer">Auto-refresh every 5s · ${escapeHtml(new Date().toISOString())}</div>
 <script nonce="${nonce}">
@@ -262,11 +332,15 @@ function renderHtml(rows: RowSnapshot[], nonce: string, issueUrlTemplate?: strin
     const button = event.target.closest('[data-act]');
     if (!button) return;
     event.preventDefault();
-    vscode.postMessage({
-      act: button.getAttribute('data-act'),
-      role: button.getAttribute('data-role'),
-      issue: button.getAttribute('data-issue'),
-    });
+    const act = button.getAttribute('data-act');
+    const role = button.getAttribute('data-role');
+    const issue = button.getAttribute('data-issue');
+    let prompt;
+    if (role) {
+      const ta = document.getElementById('prompt-' + role);
+      if (ta) prompt = ta.value;
+    }
+    vscode.postMessage({ act, role, issue, prompt });
   });
 </script>
 </body>
@@ -304,7 +378,7 @@ export function openConsole(
   refresh();
   const handle = setInterval(refresh, POLL_MS);
   panel.onDidDispose(() => clearInterval(handle), null, context.subscriptions);
-  panel.webview.onDidReceiveMessage((msg: { act: string; role: string; issue?: string }) => {
+  panel.webview.onDidReceiveMessage((msg: { act: string; role: string; issue?: string; prompt?: string }) => {
     void handleAction(repoRoot, options, msg, refresh);
   });
 
@@ -314,7 +388,7 @@ export function openConsole(
 async function handleAction(
   repoRoot: string,
   options: ConsoleOptions,
-  msg: { act: string; role: string; issue?: string },
+  msg: { act: string; role: string; issue?: string; prompt?: string },
   refresh: () => void,
 ): Promise<void> {
   if (!msg.role || !msg.act) return;
@@ -342,6 +416,12 @@ async function handleAction(
       }
       return;
     }
+    case 'clear-prompt': {
+      writePromptOverride(repoRoot, options.agentStateDir, msg.role, '');
+      refresh();
+      return;
+    }
+    case 'send-prompt':
     case 'poke':
     case 'restart': {
       const roles = readRoles(repoRoot, options.rolesFile);
@@ -350,11 +430,21 @@ async function handleAction(
         await vscode.window.showWarningMessage(`No spawnScript registered for ${msg.role}`);
         return;
       }
+      // If a prompt was provided in the webview textarea, persist it as the override so
+      // spawn scripts can read `<agentStateDir>/<role>/prompt-override.txt` when starting.
+      if (typeof msg.prompt === 'string') {
+        writePromptOverride(repoRoot, options.agentStateDir, msg.role, msg.prompt);
+      }
       const script = resolveRepoPath(repoRoot, role.spawnScript);
+      // Semantics:
+      //   poke         -> always chat-only re-kick (-Poke)
+      //   restart      -> smart: spawn script decides (launches Insiders if closed, pokes if open)
+      //   send-prompt  -> smart (let spawn script pick window-or-chat) with override prompt in file
       const argFlag = msg.act === 'poke' ? ' -Poke' : '';
       const terminal = vscode.window.createTerminal({ name: `${role.shortId} ${msg.act}`, cwd: repoRoot });
-      terminal.sendText(`pwsh -NoProfile -File \"${script}\"${argFlag}`);
+      terminal.sendText(`pwsh -NoProfile -File "${script}"${argFlag}`);
       terminal.show();
+      refresh();
       return;
     }
   }

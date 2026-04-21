@@ -235,15 +235,21 @@ await (async () => {
   // Instead of waiting 5s, we just assert lastEpoch stored:
   ok('lastEpoch stored in globalState', ctx.globalState.get(`agentConsole.lastEpoch.TestAgent`, 0) === now);
 
-  // Advance epoch → should fire again on next tick
+  // Advance epoch → should fire again on next tick (poll is 5s; wait 5.5s)
   const later = now + 10;
   writeKickoff(root, 'TestAgent', {
     role: 'TestAgent', ts: new Date().toISOString(), epoch: later,
     reason: 'bump', version: 1, prompt: 'Second shot',
   });
-  // Trigger internal poll loop: the extension sets 5s setInterval; we cheat and wait 5.2s
-  // To avoid flakiness, short-circuit by calling tick indirectly via schema violation: skip the 5s wait.
-  // (Skipping live re-poll test; covered by "lastEpoch stored" + explicit version-gate test below.)
+  vscodeStub._chatCalls.length = 0;
+  await new Promise((r) => setTimeout(r, 5500));
+  const secondOpen = vscodeStub._chatCalls.find((c) => c.id === 'workbench.action.chat.open');
+  ok('re-fire on epoch advance (live 5s poll)', !!secondOpen);
+  const secondArg = secondOpen?.arg;
+  const secondText = typeof secondArg === 'string' ? secondArg : secondArg?.query;
+  eq('re-fire delivered new prompt', secondText, 'Second shot');
+  ok('globalState epoch bumped to later',
+    ctx.globalState.get(`agentConsole.lastEpoch.TestAgent`, 0) === later);
 
   ctx.subscriptions.forEach((s) => s.dispose?.());
   fs.rmSync(root, { recursive: true, force: true });
