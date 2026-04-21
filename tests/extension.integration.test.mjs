@@ -333,8 +333,10 @@ console.log('\n== console.ts openConsole() integration ==');
   ok('health green dot for fresh RoleA', html.includes('dot green'));
   ok('issue link present for RoleA', html.includes('data-issue="42"'));
   ok('Pause button present', html.includes('data-act="pause"'));
-  ok('Poke button present', html.includes('data-act="poke"'));
+  ok('Send prompt button present', html.includes('data-act="send-prompt"'));
   ok('Restart button present', html.includes('data-act="restart"'));
+  ok('Prompt textarea present', html.includes('<textarea') && html.includes('Type the next prompt'));
+  ok('No Poke button (renamed)', !html.includes('data-act="poke"'));
   panel.dispose();
   fs.rmSync(root, { recursive: true, force: true });
 }
@@ -377,19 +379,34 @@ await (async () => {
   });
   vscodeStub._chatCalls.length = 0;
   vscodeStub._terminalsSent.length = 0;
-  await panel._msgHandler({ act: 'poke', role: 'NoScript' });
+  await panel._msgHandler({ act: 'send-prompt', role: 'NoScript', prompt: 'hi' });
   ok('warning shown when spawnScript missing',
     vscodeStub._chatCalls.some((c) => c.kind === 'warn'));
 
   await panel._msgHandler({ act: 'restart', role: 'HasScript' });
   ok('terminal sendText invoked on restart',
     vscodeStub._terminalsSent.some((t) => t.text.includes('spawn-h.ps1')));
-  ok('terminal has no Poke flag on restart',
+  ok('restart command has no -Poke flag',
     vscodeStub._terminalsSent.every((t) => !t.text.includes(' -Poke')));
 
-  await panel._msgHandler({ act: 'poke', role: 'HasScript' });
-  ok('terminal has -Poke flag on poke',
-    vscodeStub._terminalsSent.some((t) => t.text.includes(' -Poke')));
+  // send-prompt persists the textarea value to prompt-override.txt and triggers a spawn
+  await panel._msgHandler({ act: 'send-prompt', role: 'HasScript', prompt: 'custom kickoff' });
+  const overridePath = path.join(root, '.agent', 'HasScript', 'prompt-override.txt');
+  ok('prompt-override.txt written on send-prompt', fs.existsSync(overridePath));
+  eq('prompt-override.txt content matches textarea', fs.readFileSync(overridePath, 'utf8'), 'custom kickoff');
+  ok('send-prompt command has no -Poke flag',
+    vscodeStub._terminalsSent.every((t) => !t.text.includes(' -Poke')));
+
+  // clear-prompt removes the override file without spawning
+  const termCountBefore = vscodeStub._terminalsSent.length;
+  await panel._msgHandler({ act: 'clear-prompt', role: 'HasScript' });
+  ok('prompt-override.txt removed on clear', !fs.existsSync(overridePath));
+  eq('clear-prompt does not open terminal', vscodeStub._terminalsSent.length, termCountBefore);
+
+  // restart (default) explicitly clears any pre-existing override
+  fs.writeFileSync(overridePath, 'stale', 'utf8');
+  await panel._msgHandler({ act: 'restart', role: 'HasScript' });
+  ok('restart clears stale prompt-override.txt', !fs.existsSync(overridePath));
 
   panel.dispose();
   fs.rmSync(root, { recursive: true, force: true });

@@ -273,17 +273,13 @@ function renderHtml(rows: RowSnapshot[], nonce: string, issueUrlTemplate?: strin
       <td>${escapeHtml(ageText)}<br/><small>${escapeHtml(row.lastActivityIso)}</small></td>
       <td>${ghCell}</td>
       <td><small>${escapeHtml(row.stopReason || '—')}</small></td>
-      <td><small>${escapeHtml(row.nextPromptPreview || '—')}</small></td>
-      <td>
-        <button data-act="${pauseAction}" data-role="${row.role}">${pauseLabel}</button>
-        <button data-act="poke" data-role="${row.role}" title="Send a chat re-kick to the existing window only">Poke</button>
-        <button data-act="restart" data-role="${row.role}" title="Launch Insiders if closed, or re-kick chat if open">Restart</button>
-      </td>
       <td class="prompt-cell">
-        <textarea id="${promptId}" data-role="${row.role}" rows="2" placeholder="Optional prompt override (sent on Send / Restart)">${promptVal}</textarea>
+        <textarea id="${promptId}" data-role="${row.role}" rows="3" placeholder="Type the next prompt for this agent. Leave blank to use the spawn script default.">${promptVal}</textarea>
         <div class="prompt-actions">
-          <button data-act="send-prompt" data-role="${row.role}">Send</button>
-          <button data-act="clear-prompt" data-role="${row.role}">Clear</button>
+          <button data-act="send-prompt" data-role="${row.role}" class="primary" title="Save prompt and spawn/wake the agent (launch Insiders if closed, re-kick chat if open)">Send &amp; Start</button>
+          <button data-act="restart" data-role="${row.role}" title="Spawn/wake the agent using the default prompt (ignores the textarea)">Restart (default)</button>
+          <button data-act="clear-prompt" data-role="${row.role}" title="Clear saved override">Clear</button>
+          <button data-act="${pauseAction}" data-role="${row.role}">${pauseLabel}</button>
         </div>
       </td>
     </tr>`;
@@ -312,18 +308,20 @@ function renderHtml(rows: RowSnapshot[], nonce: string, issueUrlTemplate?: strin
   button { margin-right: 4px; padding: 2px 8px; cursor: pointer; }
   a { color: var(--vscode-textLink-foreground); }
   .footer { margin-top: 12px; font-size: 11px; opacity: 0.7; }
-  textarea { width: 100%; min-width: 200px; font-family: var(--vscode-editor-font-family); font-size: 11px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, #444); padding: 2px 4px; resize: vertical; }
-  .prompt-cell { min-width: 220px; }
-  .prompt-actions { margin-top: 2px; }
+  textarea { width: 100%; min-width: 280px; font-family: var(--vscode-editor-font-family); font-size: 11px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, #444); padding: 4px 6px; resize: vertical; box-sizing: border-box; }
+  .prompt-cell { min-width: 320px; width: 40%; }
+  .prompt-actions { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .prompt-actions button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 3px 10px; font-weight: 600; }
+  .prompt-actions button.primary:hover { background: var(--vscode-button-hoverBackground); }
 </style>
 </head>
 <body>
 <h1>${PANEL_TITLE}</h1>
 <table>
   <thead>
-    <tr><th>Role</th><th>GH Account</th><th>Status</th><th>Issue</th><th>Branch</th><th>Last Activity</th><th>GH (core)</th><th>Stop Reason</th><th>Next Prompt</th><th>Actions</th><th>Prompt Override</th></tr>
+    <tr><th>Role</th><th>GH Account</th><th>Status</th><th>Issue</th><th>Branch</th><th>Last Activity</th><th>GH (core)</th><th>Stop Reason</th><th>Next Prompt &amp; Controls</th></tr>
   </thead>
-  <tbody>${body || '<tr><td colspan="11">No roles registered.</td></tr>'}</tbody>
+  <tbody>${body || '<tr><td colspan="9">No roles registered.</td></tr>'}</tbody>
 </table>
 <div class="footer">Auto-refresh every 5s · ${escapeHtml(new Date().toISOString())}</div>
 <script nonce="${nonce}">
@@ -422,7 +420,6 @@ async function handleAction(
       return;
     }
     case 'send-prompt':
-    case 'poke':
     case 'restart': {
       const roles = readRoles(repoRoot, options.rolesFile);
       const role = roles.find((entry) => entry.id === msg.role);
@@ -430,19 +427,18 @@ async function handleAction(
         await vscode.window.showWarningMessage(`No spawnScript registered for ${msg.role}`);
         return;
       }
-      // If a prompt was provided in the webview textarea, persist it as the override so
-      // spawn scripts can read `<agentStateDir>/<role>/prompt-override.txt` when starting.
-      if (typeof msg.prompt === 'string') {
+      // send-prompt: persist whatever is in the textarea as the one-shot override.
+      // restart (default): explicitly clear any override so the spawn script falls back to its built-in prompt.
+      if (msg.act === 'send-prompt' && typeof msg.prompt === 'string') {
         writePromptOverride(repoRoot, options.agentStateDir, msg.role, msg.prompt);
+      } else if (msg.act === 'restart') {
+        writePromptOverride(repoRoot, options.agentStateDir, msg.role, '');
       }
       const script = resolveRepoPath(repoRoot, role.spawnScript);
-      // Semantics:
-      //   poke         -> always chat-only re-kick (-Poke)
-      //   restart      -> smart: spawn script decides (launches Insiders if closed, pokes if open)
-      //   send-prompt  -> smart (let spawn script pick window-or-chat) with override prompt in file
-      const argFlag = msg.act === 'poke' ? ' -Poke' : '';
+      // Smart spawn: the script itself decides whether to open a new Insiders
+      // window or just re-kick chat in the existing one.
       const terminal = vscode.window.createTerminal({ name: `${role.shortId} ${msg.act}`, cwd: repoRoot });
-      terminal.sendText(`pwsh -NoProfile -File "${script}"${argFlag}`);
+      terminal.sendText(`pwsh -NoProfile -File "${script}"`);
       terminal.show();
       refresh();
       return;
