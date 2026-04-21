@@ -3,13 +3,19 @@
   "displayName": "Agent Console",
   "description": "VS Code companion extension for local coding agents: kickoff prompts, live activity, and an operator console.",
   "version": "0.1.0",
-  "private": true,
   "publisher": "sirjamesoffordii",
+  "license": "MIT",
+  "icon": "icon.png",
+  "categories": ["Other"],
+  "keywords": ["agent", "copilot", "orchestration", "automation", "ai"],
   "repository": {
     "type": "git",
     "url": "https://github.com/sirjamesoffordii/Agent-Console.git"
   },
-  "homepage": "https://github.com/sirjamesoffordii/Agent-Console",
+  "bugs": {
+    "url": "https://github.com/sirjamesoffordii/Agent-Console/issues"
+  },
+  "homepage": "https://github.com/sirjamesoffordii/Agent-Console#readme",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -54,7 +60,8 @@
   },
   "scripts": {
     "build": "tsc -p ./",
-    "package": "npx @vscode/vsce package --allow-missing-repository --skip-license -o dist/agent-console.vsix"
+    "package": "npx @vscode/vsce package -o dist/agent-console.vsix",
+    "publish": "npx @vscode/vsce publish"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
