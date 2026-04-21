@@ -366,7 +366,11 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
     const cfgStateRoot = resolveStateRoot(root, config.sharedRoot);
-    openConsole(context, cfgStateRoot, config);
+    // If sharedRoot differs from the workspace root, also search the workspace
+    // root for role state — role windows may still be writing to their own
+    // worktree, and we want the console to see the most recent data either way.
+    const fallbacks = cfgStateRoot !== root ? [root] : [];
+    openConsole(context, cfgStateRoot, { ...config, fallbackStateRoots: fallbacks });
   }));
 
   if (!repoRoot) {

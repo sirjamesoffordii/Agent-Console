@@ -22,6 +22,13 @@ export type ConsoleOptions = {
   issueUrlTemplate?: string;
   rolesFile: string;
   sharedRoot?: string;
+  /**
+   * Extra roots that may hold `.agent/<role>/state.json` or activity for a
+   * role. The snapshot picks whichever location has the most recent state
+   * file, so a role window writing to its own worktree still surfaces in a
+   * console reading from a shared root (and vice versa).
+   */
+  fallbackStateRoots?: string[];
 };
 
 type RoleEntry = {
@@ -238,17 +245,42 @@ function deriveStopReason(events: ActivityLine[]): string {
 }
 
 function snapshot(repoRoot: string, role: RoleEntry, options: ConsoleOptions): RowSnapshot {
-  const heartbeat = readJson<Heartbeat>(path.join(repoRoot, options.agentStateDir, role.id, 'heartbeat.json')) ?? {};
-  const state = readJson<LiveStateRead>(path.join(repoRoot, options.agentStateDir, role.id, 'state.json')) ?? {};
+  // Pick the state root with the freshest state.json for this role, so the
+  // console stays correct when role windows write to their own worktrees
+  // and the operator dashboard reads from a shared root (or vice versa).
+  const candidateRoots = [repoRoot, ...(options.fallbackStateRoots ?? [])].filter(
+    (r, i, arr) => !!r && arr.indexOf(r) === i,
+  );
+  const pickRoot = (): string => {
+    let best = repoRoot;
+    let bestMtime = -1;
+    for (const r of candidateRoots) {
+      try {
+        const f = path.join(r, options.agentStateDir, role.id, 'state.json');
+        const s = fs.statSync(f);
+        if (s.mtimeMs > bestMtime) {
+          bestMtime = s.mtimeMs;
+          best = r;
+        }
+      } catch {
+        // missing file — skip
+      }
+    }
+    return best;
+  };
+  const stateRoot = pickRoot();
+
+  const heartbeat = readJson<Heartbeat>(path.join(stateRoot, options.agentStateDir, role.id, 'heartbeat.json')) ?? {};
+  const state = readJson<LiveStateRead>(path.join(stateRoot, options.agentStateDir, role.id, 'state.json')) ?? {};
   // Partner-Path writes `next-action.json` (not `next-prompt.json`). Read
   // either so the console works against both the Agent Console extension's
   // emissions and the Partner-Path spawn/watchdog harness.
   const nextPromptFallback = readJson<{ prompt?: string; reason?: string; action?: string }>(
-    path.join(repoRoot, options.agentStateDir, role.id, 'next-prompt.json'),
+    path.join(stateRoot, options.agentStateDir, role.id, 'next-prompt.json'),
   ) ?? readJson<{ prompt?: string; reason?: string; action?: string }>(
-    path.join(repoRoot, options.agentStateDir, role.id, 'next-action.json'),
+    path.join(stateRoot, options.agentStateDir, role.id, 'next-action.json'),
   ) ?? {};
-  const control = readControl(repoRoot, options.agentStateDir);
+  const control = readControl(stateRoot, options.agentStateDir);
   const paused = !!control.paused?.[role.id];
 
   let ageSec = -1;
@@ -264,10 +296,10 @@ function snapshot(repoRoot: string, role: RoleEntry, options: ConsoleOptions): R
     }
   }
 
-  const events = tailActivity(repoRoot, options.agentStateDir, role.id, 5);
+  const events = tailActivity(stateRoot, options.agentStateDir, role.id, 5);
   const stopReason = deriveStopReason(events);
 
-  const rateLimit = readJson<RateLimitFile>(path.join(repoRoot, options.agentStateDir, role.id, 'ratelimit.json'));
+  const rateLimit = readJson<RateLimitFile>(path.join(stateRoot, options.agentStateDir, role.id, 'ratelimit.json'));
   let ghCore = '—';
   let ghCoreLevel: RowSnapshot['ghCoreLevel'] = 'unknown';
   if (rateLimit?.ok && rateLimit.resources?.core) {
@@ -281,7 +313,7 @@ function snapshot(repoRoot: string, role: RoleEntry, options: ConsoleOptions): R
   }
 
   const ghAcct = readGhAccount(role.ghConfigDir);
-  const promptOverride = readPromptOverride(repoRoot, options.agentStateDir, role.id);
+  const promptOverride = readPromptOverride(stateRoot, options.agentStateDir, role.id);
   const windowOpen = isWindowOpen(role.userDataDir);
   const agentFileInfo = checkAgentFile(repoRoot, role.agentFile);
 
