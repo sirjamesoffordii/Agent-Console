@@ -88,3 +88,18 @@ Manual fallback:
 npx @vscode/vsce login sirjamesoffordii   # paste PAT once
 npm run publish
 ```
+
+## Companion tools
+
+Reusable PowerShell helpers that pair with the extension live under
+[`tools/`](tools):
+
+- [`tools/agent-contract/`](tools/agent-contract) — producer-side primitives
+  (`Write-AgentKickoff`, `Write-AgentNextPrompt`, `Write-AgentNextAction`)
+  that any repo can import to drive the extension's JSON bus.
+- [`tools/agent-tray/`](tools/agent-tray) — Windows system-tray launcher that
+  reads heartbeat files, surfaces overall health, and exposes spawn / poke /
+  pause / resume / open-console actions via right-click menu.
+
+Neither is packaged into the VSIX; they are repo-agnostic companion scripts
+to copy or reference from any host repo.

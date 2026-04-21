@@ -1,4 +1,6 @@
 src/**
+tools/**
+.github/**
 tsconfig.json
 package-lock.json
 .gitignore
