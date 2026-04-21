@@ -60,7 +60,7 @@ function createVscodeStub() {
     _config: {},
     window: {
       createStatusBarItem: () => {
-        statusBar = { text: '', tooltip: '', show: () => {}, dispose: () => {} };
+        statusBar = { text: '', tooltip: '', command: '', show: () => {}, dispose: () => {} };
         return statusBar;
       },
       get statusBar() { return statusBar; },
@@ -182,7 +182,8 @@ console.log('== extension.ts activate() integration ==');
   vscodeStub._config = {};
   const ctx = makeContext();
   extension.activate(ctx);
-  ok('no-workspace sets warning status', vscodeStub.window.statusBar.text.includes('no workspace'));
+  ok('no-workspace sets dashboard status', vscodeStub.window.statusBar.text.includes('Agent Console'));
+  ok('no-workspace status has openConsole command', vscodeStub.window.statusBar.command === 'agentConsole.openConsole');
   // cleanup subs
   ctx.subscriptions.forEach((s) => s.dispose?.());
 }
@@ -197,7 +198,7 @@ console.log('== extension.ts activate() integration ==');
   writeRolesManifest(root, [{ id: 'NoMatchRole', shortId: 'N', displayName: 'n', userDataDir: '/zzz/nonexistent-udd-path-XYZ123' }]);
   const ctx = makeContext();
   extension.activate(ctx);
-  ok('role-unknown sets warning', vscodeStub.window.statusBar.text.includes('role unknown'));
+  ok('role-unknown sets dashboard status', vscodeStub.window.statusBar.text.includes('Agent Console'));
   ctx.subscriptions.forEach((s) => s.dispose?.());
   fs.rmSync(root, { recursive: true, force: true });
 }
@@ -218,7 +219,7 @@ await (async () => {
   vscodeStub._chatCalls.length = 0;
   const ctx = makeContext();
   extension.activate(ctx);
-  ok('watching status set', vscodeStub.window.statusBar.text.includes('kickoff watching'));
+  ok('watching status set', vscodeStub.window.statusBar.text.includes('TestAgent'));
 
   // Let the immediate tick run (extension.activate calls void tick() synchronously but await is needed)
   await new Promise((r) => setTimeout(r, 900));

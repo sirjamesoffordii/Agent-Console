@@ -64,11 +64,13 @@ const DEFAULT_PROMPT = 'Resume your agent workflow for this repository.';
 function getConfig(): ConsoleOptions & { role?: string } {
   const config = vscode.workspace.getConfiguration('agentConsole');
   const role = (config.get<string>('role') ?? '').trim();
+  const sharedRoot = (config.get<string>('sharedRoot') ?? '').trim();
   return {
     role: role.length > 0 ? role : undefined,
     agentStateDir: config.get<string>('agentStateDir') ?? '.agent',
     rolesFile: config.get<string>('rolesFile') ?? '.github/agents/roles.json',
     issueUrlTemplate: (config.get<string>('issueUrlTemplate') ?? '').trim() || undefined,
+    sharedRoot: sharedRoot.length > 0 ? sharedRoot : undefined,
   };
 }
 
@@ -85,6 +87,15 @@ function findRepoRoot(agentStateDir: string): string | undefined {
     if (fs.existsSync(candidate)) return folder.uri.fsPath;
   }
   return folders[0]?.uri.fsPath;
+}
+
+// The "state root" is where `.agent/<role>/...` lives. Normally that's the
+// workspace folder, but when multiple role windows point at different
+// worktrees we want them to share one tree. `agentConsole.sharedRoot` (if set)
+// always wins; otherwise we fall back to the workspace folder.
+function resolveStateRoot(repoRoot: string, sharedRoot?: string): string {
+  if (sharedRoot && fs.existsSync(sharedRoot)) return sharedRoot;
+  return repoRoot;
 }
 
 function readJsonSafe<T>(file: string): T | undefined {
@@ -228,9 +239,11 @@ function startActivityEmitter(
   role: string,
   repoRoot: string,
   agentStateDir: string,
+  workspaceRoot?: string,
 ): void {
   const kickoffFile = path.join(repoRoot, agentStateDir, role, 'kickoff.json');
   const nextPromptFile = path.join(repoRoot, agentStateDir, role, 'next-prompt.json');
+  const branchRoot = workspaceRoot ?? repoRoot;
 
   let lastKickoffMtime = 0;
   let lastNextPromptMtime = 0;
@@ -324,7 +337,7 @@ function startActivityEmitter(
     writeState(repoRoot, agentStateDir, {
       role,
       status: 'alive',
-      branch: readBranch(repoRoot),
+      branch: readBranch(branchRoot),
       lastActivityEpoch,
       nextPromptPreview: nextPrompt?.prompt?.slice(0, 200),
       ts: new Date().toISOString(),
@@ -341,6 +354,9 @@ export function activate(context: vscode.ExtensionContext): void {
   const config = getConfig();
   const repoRoot = findRepoRoot(config.agentStateDir);
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  // Always make the status item clickable so operators can launch the console
+  // from any window (host or role instance).
+  status.command = 'agentConsole.openConsole';
   context.subscriptions.push(status);
 
   context.subscriptions.push(vscode.commands.registerCommand('agentConsole.openConsole', () => {
@@ -349,31 +365,35 @@ export function activate(context: vscode.ExtensionContext): void {
       void vscode.window.showWarningMessage('Agent Console: no workspace folder open.');
       return;
     }
-    openConsole(context, root, config);
+    const cfgStateRoot = resolveStateRoot(root, config.sharedRoot);
+    openConsole(context, cfgStateRoot, config);
   }));
 
   if (!repoRoot) {
-    status.text = '$(warning) Agent Console: no workspace';
+    status.text = '$(dashboard) Agent Console';
+    status.tooltip = 'Click to open Agent Console (no workspace folder detected)';
     status.show();
     return;
   }
 
   const role = detectRole(repoRoot, config.role, config.rolesFile);
   if (!role) {
-    status.text = '$(warning) Agent Console: role unknown';
-    status.tooltip = 'Set agentConsole.role or AGENT_CONSOLE_ROLE for this window.';
+    status.text = '$(dashboard) Agent Console';
+    status.tooltip = 'Click to open Agent Console (role not detected for this window)';
     status.show();
     return;
   }
 
-  status.text = `$(rocket) ${role} kickoff watching`;
-  status.tooltip = `Watching ${config.agentStateDir}/${role}/kickoff.json`;
+  status.text = `$(dashboard) ${role}`;
+  status.tooltip = `Click to open Agent Console — watching ${config.agentStateDir}/${role}/kickoff.json`;
   status.show();
+
+  const stateRoot = resolveStateRoot(repoRoot, config.sharedRoot);
 
   const stateKey = STATE_KEY_PREFIX + role;
 
   const tick = async () => {
-    const payload = readKickoff(repoRoot, config.agentStateDir, role);
+    const payload = readKickoff(stateRoot, config.agentStateDir, role);
     if (!payload) return;
     if (payload.version !== 1) {
       status.text = '$(warning) Agent Console: unknown schema';
@@ -400,7 +420,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const handle = setInterval(() => { void tick(); }, POLL_MS);
   context.subscriptions.push({ dispose: () => clearInterval(handle) });
 
-  startActivityEmitter(context, role, repoRoot, config.agentStateDir);
+  startActivityEmitter(context, role, stateRoot, config.agentStateDir, repoRoot);
 }
 
 export function deactivate(): void {

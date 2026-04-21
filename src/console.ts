@@ -21,6 +21,7 @@ export type ConsoleOptions = {
   agentStateDir: string;
   issueUrlTemplate?: string;
   rolesFile: string;
+  sharedRoot?: string;
 };
 
 type RoleEntry = {
@@ -121,23 +122,36 @@ function listInsidersCmdLines(): string[] {
   if (process.platform !== 'win32') return [];
   const now = Date.now();
   if (now - _windowCache.at < WINDOW_CACHE_TTL_MS) return _windowCache.cmdLines;
-  try {
-    const out = cp.execFileSync(
-      'wmic',
-      ['process', 'where', "name='Code - Insiders.exe'", 'get', 'CommandLine', '/format:list'],
-      { encoding: 'utf8', timeout: 3_000, stdio: ['ignore', 'pipe', 'ignore'] },
-    );
-    const cmdLines = out
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.startsWith('CommandLine='))
-      .map((line) => line.substring('CommandLine='.length));
-    _windowCache = { at: now, cmdLines };
-    return cmdLines;
-  } catch {
+  // wmic was removed from Windows 11 24H2+, so we use PowerShell + CIM instead.
+  // Filter in the pipeline (not -Filter) to avoid nested-quote escaping issues
+  // when execFileSync passes the -Command arg through to PowerShell.
+  const ps =
+    "Get-CimInstance Win32_Process | " +
+    "Where-Object { $_.Name -eq 'Code - Insiders.exe' } | " +
+    "ForEach-Object { $_.CommandLine } | Where-Object { $_ } | " +
+    "ForEach-Object { $_ + [char]0 }";
+  const tryExec = (exe: string): string | null => {
+    try {
+      return cp.execFileSync(exe, ['-NoProfile', '-NonInteractive', '-Command', ps], {
+        encoding: 'utf8',
+        timeout: 4_000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+    } catch {
+      return null;
+    }
+  };
+  const out = tryExec('pwsh') ?? tryExec('powershell');
+  if (out === null) {
     _windowCache = { at: now, cmdLines: [] };
     return [];
   }
+  const cmdLines = out
+    .split('\u0000')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  _windowCache = { at: now, cmdLines };
+  return cmdLines;
 }
 
 function isWindowOpen(userDataDir?: string): boolean {
@@ -226,6 +240,14 @@ function deriveStopReason(events: ActivityLine[]): string {
 function snapshot(repoRoot: string, role: RoleEntry, options: ConsoleOptions): RowSnapshot {
   const heartbeat = readJson<Heartbeat>(path.join(repoRoot, options.agentStateDir, role.id, 'heartbeat.json')) ?? {};
   const state = readJson<LiveStateRead>(path.join(repoRoot, options.agentStateDir, role.id, 'state.json')) ?? {};
+  // Partner-Path writes `next-action.json` (not `next-prompt.json`). Read
+  // either so the console works against both the Agent Console extension's
+  // emissions and the Partner-Path spawn/watchdog harness.
+  const nextPromptFallback = readJson<{ prompt?: string; reason?: string; action?: string }>(
+    path.join(repoRoot, options.agentStateDir, role.id, 'next-prompt.json'),
+  ) ?? readJson<{ prompt?: string; reason?: string; action?: string }>(
+    path.join(repoRoot, options.agentStateDir, role.id, 'next-action.json'),
+  ) ?? {};
   const control = readControl(repoRoot, options.agentStateDir);
   const paused = !!control.paused?.[role.id];
 
@@ -258,15 +280,23 @@ function snapshot(repoRoot: string, role: RoleEntry, options: ConsoleOptions): R
     }
   }
 
-  let health: RowSnapshot['health'] = 'amber';
-  if (paused) health = 'amber';
-  else if (ageSec >= 0 && ageSec <= STALE_SEC) health = 'green';
-  else if (ageSec > STALE_SEC) health = 'red';
-
   const ghAcct = readGhAccount(role.ghConfigDir);
   const promptOverride = readPromptOverride(repoRoot, options.agentStateDir, role.id);
   const windowOpen = isWindowOpen(role.userDataDir);
   const agentFileInfo = checkAgentFile(repoRoot, role.agentFile);
+
+  // Role health reflects the operator's real question — "is this agent alive?"
+  //   green  = window open AND recent activity
+  //   amber  = paused, OR window open but no/stale activity, OR activity
+  //            without a detectable window (cross-platform fallback)
+  //   red    = window closed and no recent activity
+  let health: RowSnapshot['health'] = 'amber';
+  const freshActivity = ageSec >= 0 && ageSec <= STALE_SEC;
+  if (paused) health = 'amber';
+  else if (windowOpen && freshActivity) health = 'green';
+  else if (windowOpen) health = 'amber';
+  else if (freshActivity) health = 'amber';
+  else health = 'red';
 
   let chatState: RowSnapshot['chatState'] = 'unknown';
   if (ageSec < 0) chatState = 'unknown';
@@ -274,18 +304,37 @@ function snapshot(repoRoot: string, role: RoleEntry, options: ConsoleOptions): R
   else if (ageSec <= STALE_SEC) chatState = 'idle';
   else chatState = 'stale';
 
+  // Issue number: prefer heartbeat.issue (explicit), then parse branch for a
+  // leading numeric segment (Partner-Path convention: feat/pe/123-foo-bar).
+  const branchName = state.branch ?? '';
+  let issue: number | null = heartbeat.issue ?? null;
+  if (issue == null && branchName) {
+    const m = branchName.match(/(?:^|[\/_-])(\d{2,6})(?=[-_\/]|$)/);
+    if (m) issue = parseInt(m[1], 10);
+  }
+
+  // Next-prompt preview: state.json (extension) → next-prompt.json →
+  // next-action.json (Partner-Path). Fall back to the prompt-override draft.
+  const nextPromptPreview = (
+    state.nextPromptPreview ||
+    nextPromptFallback.prompt ||
+    nextPromptFallback.reason ||
+    nextPromptFallback.action ||
+    ''
+  ).slice(0, 120);
+
   return {
     role: role.id,
     shortId: role.shortId,
     displayName: role.displayName,
     status: heartbeat.status ?? 'unknown',
-    issue: heartbeat.issue ?? null,
-    branch: state.branch ?? '',
+    issue,
+    branch: branchName,
     lastActivityIso,
     ageSec,
     paused,
     stopReason,
-    nextPromptPreview: (state.nextPromptPreview ?? '').slice(0, 120),
+    nextPromptPreview,
     health,
     ghCore,
     ghCoreLevel,
