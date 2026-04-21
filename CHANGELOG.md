@@ -5,6 +5,14 @@ All notable changes to the **Agent Console** extension will be documented in thi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.11] - 2026-04-21
+
+### Changed
+- Renamed the primary action button from `Send & Start` to `Send`. Behavior is unchanged — it still persists the textarea as a one-shot prompt override and spawns/wakes the agent.
+
+### Added
+- New `Auto Send` toggle button per role. When ON and the role's chat goes **Stale** (no activity for > 3 min), the console automatically re-fires the spawn script so the persisted prompt override gets delivered again. Respects Pause, skips empty prompts, and has a 2-minute per-role cooldown so a persistently stale chat isn't re-kicked every poll.
+
 ## [0.1.10] - 2026-04-21
 
 ### Fixed

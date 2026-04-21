@@ -45,7 +45,7 @@ type RolesFile = { version?: number; roles?: RoleEntry[] };
 type Heartbeat = { ts?: string; status?: string; issue?: number | null };
 type LiveStateRead = { lastActivityEpoch?: number; branch?: string; nextPromptPreview?: string };
 type ActivityLine = { ts?: string; type?: string; summary?: string };
-type AgentControl = { paused?: Record<string, boolean> };
+type AgentControl = { paused?: Record<string, boolean>; autoSend?: Record<string, boolean> };
 type RateBucket = { limit?: number; remaining?: number; reset?: number };
 type RateLimitFile = {
   ts?: string;
@@ -88,6 +88,7 @@ type RowSnapshot = {
   lastActivityIso: string;
   ageSec: number;
   paused: boolean;
+  autoSend: boolean;
   stopReason: string;
   nextPromptPreview: string;
   health: 'green' | 'amber' | 'red';
@@ -312,6 +313,7 @@ function snapshot(repoRoot: string, role: RoleEntry, options: ConsoleOptions): R
   ) ?? {};
   const control = readControl(stateRoot, options.agentStateDir);
   const paused = !!control.paused?.[role.id];
+  const autoSend = !!control.autoSend?.[role.id];
 
   let ageSec = -1;
   let lastActivityIso = '';
@@ -395,6 +397,7 @@ function snapshot(repoRoot: string, role: RoleEntry, options: ConsoleOptions): R
     lastActivityIso,
     ageSec,
     paused,
+    autoSend,
     stopReason,
     nextPromptPreview,
     health,
@@ -455,6 +458,8 @@ function renderHtml(rows: RowSnapshot[], nonce: string, issueUrlTemplate?: strin
     const chatCell = `<span class="dot ${chatDotClass}"></span><strong>${chatLabel}</strong><br/><small>${escapeHtml(ageText)}</small>`;
     const pauseLabel = row.paused ? 'Resume' : 'Pause';
     const pauseAction = row.paused ? 'resume' : 'pause';
+    const autoSendLabel = row.autoSend ? 'Auto Send: ON' : 'Auto Send: OFF';
+    const autoSendClass = row.autoSend ? ' class="primary"' : '';
     const promptId = `prompt-${row.role}`;
     const promptVal = escapeHtml(row.promptOverride);
     return `<tr>
@@ -470,7 +475,8 @@ function renderHtml(rows: RowSnapshot[], nonce: string, issueUrlTemplate?: strin
       <td class="prompt-cell">
         <textarea id="${promptId}" data-role="${row.role}" rows="3" placeholder="Type the next prompt for this agent. Leave blank to use the spawn script default.">${promptVal}</textarea>
         <div class="prompt-actions">
-          <button data-act="send-prompt" data-role="${row.role}" class="primary" title="Save prompt and spawn/wake the agent (launch Insiders if closed, re-kick chat if open)">Send &amp; Start</button>
+          <button data-act="send-prompt" data-role="${row.role}" class="primary" title="Save prompt and spawn/wake the agent (launch Insiders if closed, re-kick chat if open)">Send</button>
+          <button data-act="toggle-auto-send" data-role="${row.role}"${autoSendClass} title="When ON, auto-send the textbox prompt whenever this agent's chat goes Stale (respects Pause)">${autoSendLabel}</button>
           <button data-act="restart" data-role="${row.role}" title="Spawn/wake the agent using the default prompt (ignores the textarea)">Restart (default)</button>
           <button data-act="clear-prompt" data-role="${row.role}" title="Clear saved override">Clear</button>
           <button data-act="${pauseAction}" data-role="${row.role}">${pauseLabel}</button>
@@ -611,10 +617,43 @@ export function openConsole(
   // isn't destroyed while the user is typing the next prompt.
   const focusedRoles = new Set<string>();
 
+  // Per-role cooldown for Auto Send so a persistently-stale chat doesn't
+  // get re-kicked every 5s. Stores epoch-ms of the last auto-fire.
+  const lastAutoSendAt = new Map<string, number>();
+  const AUTO_SEND_COOLDOWN_MS = 120_000;
+
+  const fireSpawn = (roleId: string): void => {
+    const roles = readRoles(repoRoot, options.rolesFile);
+    const role = roles.find((entry) => entry.id === roleId);
+    if (!role) return;
+    const script = resolveSpawnScriptPath(repoRoot, role);
+    if (!script) return;
+    const terminalName = role.shortId ? `${role.shortId} auto-send` : `${roleId} auto-send`;
+    const terminal = vscode.window.createTerminal({ name: terminalName, cwd: repoRoot });
+    terminal.sendText(`pwsh -NoProfile -File "${script}"`);
+    // Don't steal focus for auto-fires.
+  };
+
   const refresh = () => {
-    if (focusedRoles.size > 0) return;
     const roles = readRoles(repoRoot, options.rolesFile);
     const rows = roles.map((role) => snapshot(repoRoot, role, options));
+
+    // Auto Send: for any role with autoSend ON, not paused, chat stale, and a
+    // non-empty persisted prompt override, fire the spawn script. Respect a
+    // per-role cooldown so we don't re-kick every poll.
+    const now = Date.now();
+    for (const row of rows) {
+      if (!row.autoSend) continue;
+      if (row.paused) continue;
+      if (row.chatState !== 'stale') continue;
+      if (row.promptOverride.trim().length === 0) continue;
+      const last = lastAutoSendAt.get(row.role) ?? 0;
+      if (now - last < AUTO_SEND_COOLDOWN_MS) continue;
+      lastAutoSendAt.set(row.role, now);
+      fireSpawn(row.role);
+    }
+
+    if (focusedRoles.size > 0) return;
     panel.webview.html = renderHtml(rows, createNonce(), options.issueUrlTemplate);
   };
 
@@ -659,6 +698,20 @@ async function handleAction(
       const control = readControl(repoRoot, options.agentStateDir);
       if (control.paused) delete control.paused[msg.role];
       writeControl(repoRoot, options.agentStateDir, control);
+      refresh();
+      return;
+    }
+    case 'toggle-auto-send': {
+      const control = readControl(repoRoot, options.agentStateDir);
+      control.autoSend = control.autoSend ?? {};
+      const next = !control.autoSend[msg.role];
+      if (next) control.autoSend[msg.role] = true;
+      else delete control.autoSend[msg.role];
+      writeControl(repoRoot, options.agentStateDir, control);
+      // Persist whatever is currently in the textarea so auto-send has something to send.
+      if (typeof msg.prompt === 'string' && msg.prompt.trim().length > 0) {
+        writePromptOverride(repoRoot, options.agentStateDir, msg.role, msg.prompt);
+      }
       refresh();
       return;
     }
