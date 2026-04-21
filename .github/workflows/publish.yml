@@ -50,7 +50,15 @@ jobs:
             echo "Add a repo secret named VSCE_PAT (Azure DevOps PAT with Marketplace: Manage scope) and re-run."
             exit 0
           fi
-          npx @vscode/vsce publish --pat "$VSCE_PAT" --packagePath dist/agent-console.vsix
+          set +e
+          out=$(npx @vscode/vsce publish --pat "$VSCE_PAT" --packagePath dist/agent-console.vsix 2>&1)
+          code=$?
+          echo "$out"
+          if [ $code -ne 0 ] && echo "$out" | grep -qi "already exists"; then
+            echo "::notice::Version already published; treating as success."
+            exit 0
+          fi
+          exit $code
 
       - name: Publish to Open VSX
         if: ${{ !inputs.dryRun && env.OVSX_PAT != '' }}
