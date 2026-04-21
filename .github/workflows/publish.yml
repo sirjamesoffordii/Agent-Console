@@ -1,0 +1,59 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dryRun:
+        description: "Package only, skip publish"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Package
+        run: npx @vscode/vsce package -o dist/agent-console.vsix
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-console-vsix
+          path: dist/agent-console.vsix
+
+      - name: Publish to VS Code Marketplace
+        if: ${{ !inputs.dryRun }}
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "::warning::VSCE_PAT secret is not set; skipping Marketplace publish."
+            echo "Add a repo secret named VSCE_PAT (Azure DevOps PAT with Marketplace: Manage scope) and re-run."
+            exit 0
+          fi
+          npx @vscode/vsce publish --pat "$VSCE_PAT" --packagePath dist/agent-console.vsix
+
+      - name: Publish to Open VSX
+        if: ${{ !inputs.dryRun && env.OVSX_PAT != '' }}
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: npx ovsx publish dist/agent-console.vsix --pat "$OVSX_PAT"

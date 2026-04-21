@@ -62,3 +62,29 @@ To package a `.vsix`:
 ```powershell
 npm run package
 ```
+
+## Install
+
+- **From GitHub Release** — grab `agent-console.vsix` from the [Releases page](https://github.com/sirjamesoffordii/Agent-Console/releases) and install via Extensions panel -> `...` -> **Install from VSIX**, or:
+
+  ```powershell
+  code-insiders --install-extension agent-console.vsix --force
+  ```
+
+- **From Marketplace** — once published: search "Agent Console" in the Extensions panel, or `code --install-extension sirjamesoffordii.agent-console`.
+
+## Publishing (maintainer notes)
+
+Automated via `.github/workflows/publish.yml`:
+
+1. Create an Azure DevOps PAT with **Marketplace: Manage** scope at https://dev.azure.com.
+2. Add it as a repo secret named `VSCE_PAT` (Settings -> Secrets and variables -> Actions).
+3. Optional: add `OVSX_PAT` for Open VSX.
+4. Push a `v*` tag or run the `Publish` workflow via `workflow_dispatch`.
+
+Manual fallback:
+
+```powershell
+npx @vscode/vsce login sirjamesoffordii   # paste PAT once
+npm run publish
+```
