@@ -490,6 +490,46 @@ function renderHtml(rows: RowSnapshot[], nonce: string, issueUrlTemplate?: strin
 <div class="footer">Auto-refresh every 5s · ${escapeHtml(new Date().toISOString())}</div>
 <script nonce="${nonce}">
   const vscode = acquireVsCodeApi();
+  const state = vscode.getState() || {};
+  const drafts = state.drafts || {};
+
+  // Restore any in-progress textarea drafts after an auto-refresh replaced the
+  // HTML. Draft (what the user was typing) always beats the server-rendered
+  // persisted override, because the user hasn't hit Send yet.
+  document.querySelectorAll('textarea[data-role]').forEach((ta) => {
+    const role = ta.getAttribute('data-role');
+    if (drafts[role] !== undefined && drafts[role] !== null) {
+      ta.value = drafts[role];
+    }
+  });
+
+  const saveDraft = (role, value) => {
+    const s = vscode.getState() || {};
+    s.drafts = s.drafts || {};
+    if (value === '' || value == null) delete s.drafts[role];
+    else s.drafts[role] = value;
+    vscode.setState(s);
+  };
+
+  document.body.addEventListener('input', (event) => {
+    const ta = event.target.closest && event.target.closest('textarea[data-role]');
+    if (!ta) return;
+    saveDraft(ta.getAttribute('data-role'), ta.value);
+  });
+
+  // Tell the host to pause the 5s re-render while the user is typing, so the
+  // textarea isn't yanked out from under the caret.
+  document.body.addEventListener('focusin', (event) => {
+    const ta = event.target.closest && event.target.closest('textarea[data-role]');
+    if (!ta) return;
+    vscode.postMessage({ act: 'focus', role: ta.getAttribute('data-role') });
+  });
+  document.body.addEventListener('focusout', (event) => {
+    const ta = event.target.closest && event.target.closest('textarea[data-role]');
+    if (!ta) return;
+    vscode.postMessage({ act: 'blur', role: ta.getAttribute('data-role') });
+  });
+
   document.body.addEventListener('click', (event) => {
     const button = event.target.closest('[data-act]');
     if (!button) return;
@@ -501,6 +541,11 @@ function renderHtml(rows: RowSnapshot[], nonce: string, issueUrlTemplate?: strin
     if (role) {
       const ta = document.getElementById('prompt-' + role);
       if (ta) prompt = ta.value;
+    }
+    // Once the user commits (send/clear/restart) the draft is no longer
+    // in-flight — drop it so the server-rendered value wins on next refresh.
+    if (role && (act === 'send-prompt' || act === 'clear-prompt' || act === 'restart')) {
+      saveDraft(role, '');
     }
     vscode.postMessage({ act, role, issue, prompt });
   });
@@ -531,7 +576,13 @@ export function openConsole(
     { enableScripts: true, retainContextWhenHidden: true },
   );
 
+  // Track which role's textarea (if any) has focus. While a textarea is
+  // focused we skip the periodic full-HTML refresh so the caret/selection
+  // isn't destroyed while the user is typing the next prompt.
+  const focusedRoles = new Set<string>();
+
   const refresh = () => {
+    if (focusedRoles.size > 0) return;
     const roles = readRoles(repoRoot, options.rolesFile);
     const rows = roles.map((role) => snapshot(repoRoot, role, options));
     panel.webview.html = renderHtml(rows, createNonce(), options.issueUrlTemplate);
@@ -541,6 +592,16 @@ export function openConsole(
   const handle = setInterval(refresh, POLL_MS);
   panel.onDidDispose(() => clearInterval(handle), null, context.subscriptions);
   panel.webview.onDidReceiveMessage((msg: { act: string; role: string; issue?: string; prompt?: string }) => {
+    if (msg.act === 'focus' && msg.role) {
+      focusedRoles.add(msg.role);
+      return;
+    }
+    if (msg.act === 'blur' && msg.role) {
+      focusedRoles.delete(msg.role);
+      // Refresh once the user leaves the textarea so data catches up.
+      refresh();
+      return;
+    }
     void handleAction(repoRoot, options, msg, refresh);
   });
 

@@ -2,7 +2,7 @@
   "name": "agent-console",
   "displayName": "Agent Console",
   "description": "VS Code companion extension for local coding agents: kickoff prompts, live activity, and an operator console.",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "publisher": "sirjamesoffordii",
   "license": "MIT",
   "icon": "icon.png",
