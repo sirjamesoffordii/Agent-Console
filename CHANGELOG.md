@@ -5,6 +5,11 @@ All notable changes to the **Agent Console** extension will be documented in thi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.10] - 2026-04-21
+
+### Fixed
+- Agent Console now prefers stable spawn wrappers from `~/AgentTools` (or `AGENT_CONSOLE_TOOLS_DIR`) before falling back to repo-local `spawnScript` paths. This makes `Send & Start` resilient to repo branch switches and old worktrees that don't carry the latest agent-launch fixes.
+
 ## [0.1.9] - 2026-04-21
 
 ### Fixed

@@ -54,6 +54,30 @@ type RateLimitFile = {
   resources?: { core?: RateBucket; search?: RateBucket; graphql?: RateBucket };
 };
 
+function stableAgentToolsDir(): string | undefined {
+  const explicit = (process.env.AGENT_CONSOLE_TOOLS_DIR ?? '').trim();
+  if (explicit.length > 0) return explicit;
+  const home = (process.env.USERPROFILE ?? process.env.HOME ?? '').trim();
+  if (home.length === 0) return undefined;
+  return path.join(home, 'AgentTools');
+}
+
+function resolveSpawnScriptPath(repoRoot: string, role: RoleEntry): string | undefined {
+  const toolsDir = stableAgentToolsDir();
+  if (toolsDir) {
+    const candidates = [
+      role.shortId ? `spawn-${role.shortId.toLowerCase()}.ps1` : '',
+      `spawn-${role.id.toLowerCase()}.ps1`,
+    ].filter((name) => name.length > 0);
+    for (const candidate of candidates) {
+      const file = path.join(toolsDir, candidate);
+      if (fs.existsSync(file)) return file;
+    }
+  }
+  if (!role.spawnScript) return undefined;
+  return resolveRepoPath(repoRoot, role.spawnScript);
+}
+
 type RowSnapshot = {
   role: string;
   shortId: string;
@@ -654,7 +678,8 @@ async function handleAction(
     case 'restart': {
       const roles = readRoles(repoRoot, options.rolesFile);
       const role = roles.find((entry) => entry.id === msg.role);
-      if (!role?.spawnScript) {
+      const script = role ? resolveSpawnScriptPath(repoRoot, role) : undefined;
+      if (!script) {
         await vscode.window.showWarningMessage(`No spawnScript registered for ${msg.role}`);
         return;
       }
@@ -665,10 +690,10 @@ async function handleAction(
       } else if (msg.act === 'restart') {
         writePromptOverride(repoRoot, options.agentStateDir, msg.role, '');
       }
-      const script = resolveRepoPath(repoRoot, role.spawnScript);
       // Smart spawn: the script itself decides whether to open a new Insiders
       // window or just re-kick chat in the existing one.
-      const terminal = vscode.window.createTerminal({ name: `${role.shortId} ${msg.act}`, cwd: repoRoot });
+      const terminalName = role?.shortId ? `${role.shortId} ${msg.act}` : `${msg.role} ${msg.act}`;
+      const terminal = vscode.window.createTerminal({ name: terminalName, cwd: repoRoot });
       terminal.sendText(`pwsh -NoProfile -File "${script}"`);
       terminal.show();
       refresh();
