@@ -1,5 +1,6 @@
 src/**
 tools/**
+tests/**
 .github/**
 tsconfig.json
 package-lock.json

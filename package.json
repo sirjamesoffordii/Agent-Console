@@ -61,7 +61,10 @@
   "scripts": {
     "build": "tsc -p ./",
     "package": "npx @vscode/vsce package -o dist/agent-console.vsix",
-    "publish": "npx @vscode/vsce publish"
+    "publish": "npx @vscode/vsce publish",
+    "test:contract": "pwsh -NoProfile -File tests/agent-contract.tests.ps1",
+    "test:extension": "node tests/extension.integration.test.mjs",
+    "test": "npm run build && npm run test:extension && npm run test:contract"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
