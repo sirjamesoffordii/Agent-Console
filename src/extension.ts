@@ -198,11 +198,27 @@ async function openChatWithPrompt(prompt: string): Promise<void> {
   }
 }
 
+// Rotate `activity.jsonl` when it grows past this many bytes. Keeps a single
+// `.1` archive so we never lose the last N minutes of context on rotation.
+// 2 MiB is ~30k events at typical summary sizes — more than enough for stop-
+// reason classification and the last few chat turns, without letting the file
+// grow unbounded over a long-running session.
+const MAX_ACTIVITY_BYTES = 2 * 1024 * 1024;
+
 function appendActivity(repoRoot: string, agentStateDir: string, role: string, event: ActivityEvent): void {
   try {
     const dir = path.join(repoRoot, agentStateDir, role);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, 'activity.jsonl');
+    // Rotate before append if the current file is at or above the cap.
+    try {
+      const stat = fs.statSync(file);
+      if (stat.size >= MAX_ACTIVITY_BYTES) {
+        const rotated = file + '.1';
+        try { fs.unlinkSync(rotated); } catch { /* no prior archive */ }
+        fs.renameSync(file, rotated);
+      }
+    } catch { /* file doesn't exist yet — nothing to rotate */ }
     fs.appendFileSync(file, JSON.stringify(event) + '\n', 'utf8');
   } catch {
     // best-effort only

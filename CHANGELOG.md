@@ -5,6 +5,19 @@ All notable changes to the **Agent Console** extension will be documented in thi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.13] - 2026-04-22
+
+### Added
+- **Activity log rotation**: `activity.jsonl` now rotates to `activity.jsonl.1` at 2 MiB so long-running agents don't let the file grow unbounded. The extension keeps exactly one archive — enough context for the stop-reason classifier, bounded on disk.
+- **Stop-reason severity pills**: each row now renders a colored pill (`LEGIT` green / `ERROR` red / `EARLY` amber / `STALE` grey) next to the reason, and a `[error]` or `[early]` classification forces the health dot to red even when the chat window is still open. An abandoned or crashed turn is no longer invisible behind a green dot.
+- **Global Pause All / Resume All**: kill-switch buttons in the console toolbar that toggle `paused` for every role in `roles.json` with a single `agent-control.json` write.
+- **`ac` CLI** (`bin/ac.cjs`, wired via `package.json` `bin`): cross-platform operator control without needing VS Code. Commands: `status` (table + `--json`), `pause` / `resume` / `pause-all` / `resume-all`, `spawn` / `poke`, `prompt` / `clear-prompt`, `tail`. ShortId aliases are accepted everywhere a role id is expected.
+- **Daily metrics rollup**: `scripts/metrics-rollup.ps1` reads each role's `activity.jsonl` over a configurable window (default 24h) and emits `<role>/metrics-daily.json` with per-event-type counts and the most recent error — the foundation for "PE error rate tripled today" alerts.
+- **CI matrix**: the existing `windows-latest` CI job is now a matrix over `windows-latest` + `ubuntu-latest`, and adds lanes for the new CLI tests and metrics-rollup tests. The VSIX packaging job is split off into a Windows-only downstream job.
+
+### Changed
+- `npm test` now chains all four suites: extension integration, PS contract, CLI (`tests/cli.test.mjs`), and metrics rollup (`tests/metrics-rollup.tests.ps1`). Current totals: **66 + 22 + 34 + 14 = 136 tests**, all green.
+
 ## [0.1.12] - 2026-04-22
 
 ### Added

@@ -487,6 +487,105 @@ await (async () => {
     ]).startsWith('[legit]'));
 }
 
+// --- Test 9c: classifyStopReasonSeverity
+{
+  const classify = consoleMod.__test.classifyStopReasonSeverity;
+  eq('severity legit',   classify('[legit] chat.turn.end: task_complete'), 'legit');
+  eq('severity error',   classify('[error] boom'), 'error');
+  eq('severity early',   classify('[early] chat turn started, no follow-through'), 'early');
+  eq('severity stale',   classify('[stale] no activity recorded'), 'stale');
+  eq('severity unknown', classify('weird freeform string'), 'unknown');
+}
+
+// --- Test 9d: stop-reason severity escalates health to red
+{
+  const root = mkWorkspace();
+  vscodeStub.workspace.setFolders([{ uri: { fsPath: root } }]);
+  writeRolesManifest(root, [{ id: 'SeverityRole', shortId: 'SEV', displayName: 'Sev' }]);
+  // Fresh activity → would normally be amber (no window detected on Linux/CI)
+  const now = Math.floor(Date.now() / 1000);
+  writeState(root, 'SeverityRole', { lastActivityEpoch: now, branch: 'main' });
+  // Write an activity.jsonl containing only a chat.turn.start → classifier emits [early]
+  const actFile = path.join(root, '.agent', 'SeverityRole', 'activity.jsonl');
+  fs.writeFileSync(actFile,
+    JSON.stringify({ ts: new Date().toISOString(), type: 'chat.turn.start', summary: 'kickoff: x' }) + '\n',
+    'utf8');
+
+  const ctx = makeContext();
+  const panel = consoleMod.openConsole(ctx, root, {
+    agentStateDir: '.agent', rolesFile: '.github/agents/roles.json',
+  });
+  const html = panel._html;
+  ok('[early] stop-reason renders pill', html.includes('stop-pill stop-early'));
+  ok('severity escalation forces red dot', html.includes('dot red'));
+  panel.dispose();
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// --- Test 9e: Pause All / Resume All
+await (async () => {
+  const root = mkWorkspace();
+  vscodeStub.workspace.setFolders([{ uri: { fsPath: root } }]);
+  writeRolesManifest(root, [
+    { id: 'GA', shortId: 'A', displayName: 'A' },
+    { id: 'GB', shortId: 'B', displayName: 'B' },
+    { id: 'GC', shortId: 'C', displayName: 'C' },
+  ]);
+  const ctx = makeContext();
+  const panel = consoleMod.openConsole(ctx, root, {
+    agentStateDir: '.agent', rolesFile: '.github/agents/roles.json',
+  });
+
+  await panel._msgHandler({ act: 'pause-all' });
+  const ctrlPath = path.join(root, '.agent', 'agent-control.json');
+  let ctrl = JSON.parse(fs.readFileSync(ctrlPath, 'utf8'));
+  eq('pause-all sets all 3 paused', Object.keys(ctrl.paused ?? {}).sort().join(','), 'GA,GB,GC');
+
+  await panel._msgHandler({ act: 'resume-all' });
+  ctrl = JSON.parse(fs.readFileSync(ctrlPath, 'utf8'));
+  eq('resume-all clears paused map', JSON.stringify(ctrl.paused ?? {}), '{}');
+
+  // UI has the toolbar buttons
+  ok('toolbar contains Pause All', panel._html.includes('data-act="pause-all"'));
+  ok('toolbar contains Resume All', panel._html.includes('data-act="resume-all"'));
+  panel.dispose();
+  fs.rmSync(root, { recursive: true, force: true });
+})();
+
+// --- Test 9f: activity.jsonl rotation at 2 MiB
+await (async () => {
+  const root = mkWorkspace();
+  vscodeStub.workspace.setFolders([{ uri: { fsPath: root } }]);
+  vscodeStub._config = { 'agentConsole.role': 'RotateAgent' };
+  writeRolesManifest(root, [{ id: 'RotateAgent', shortId: 'R', displayName: 'R' }]);
+
+  // Pre-seed a 2.1 MiB activity.jsonl to force rotation on the very first tick.
+  const dir = path.join(root, '.agent', 'RotateAgent');
+  fs.mkdirSync(dir, { recursive: true });
+  const actFile = path.join(dir, 'activity.jsonl');
+  const bigLine = JSON.stringify({ ts: new Date().toISOString(), type: 'state.tick', summary: 'x'.repeat(200) }) + '\n';
+  const copies = Math.ceil((2.1 * 1024 * 1024) / bigLine.length);
+  const handle = fs.openSync(actFile, 'w');
+  for (let i = 0; i < copies; i++) fs.writeSync(handle, bigLine);
+  fs.closeSync(handle);
+  const preSize = fs.statSync(actFile).size;
+  ok('pre-seeded activity.jsonl over 2 MiB', preSize >= 2 * 1024 * 1024);
+
+  const ctx = makeContext();
+  extension.activate(ctx);
+  // Let the activation tick run once.
+  await new Promise((r) => setTimeout(r, 150));
+
+  const archive = actFile + '.1';
+  ok('activity.jsonl rotated to .1 archive', fs.existsSync(archive));
+  const postSize = fs.statSync(actFile).size;
+  ok('fresh activity.jsonl is much smaller than cap', postSize < 1024 * 1024);
+  ok('archive retains the pre-rotation data', fs.statSync(archive).size >= preSize - 4096);
+
+  ctx.subscriptions.forEach((s) => s.dispose?.());
+  fs.rmSync(root, { recursive: true, force: true });
+})();
+
 // --- Test 10: role detection via AGENT_CONSOLE_ROLE env
 await (async () => {
   const root = mkWorkspace();

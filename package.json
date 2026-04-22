@@ -2,7 +2,7 @@
   "name": "agent-console",
   "displayName": "Agent Console",
   "description": "VS Code companion extension for local coding agents: kickoff prompts, live activity, and an operator console.",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "publisher": "sirjamesoffordii",
   "license": "MIT",
   "icon": "icon.png",
@@ -28,6 +28,10 @@
     "vscode": "^1.85.0"
   },
   "main": "./dist/extension.js",
+  "bin": {
+    "ac": "./bin/ac.cjs",
+    "agent-console": "./bin/ac.cjs"
+  },
   "activationEvents": [
     "onStartupFinished",
     "onCommand:agentConsole.openConsole"
@@ -93,7 +97,9 @@
     "publish": "npx @vscode/vsce publish",
     "test:contract": "pwsh -NoProfile -File tests/agent-contract.tests.ps1",
     "test:extension": "node tests/extension.integration.test.mjs",
-    "test": "npm run build && npm run test:extension && npm run test:contract"
+    "test:cli": "node tests/cli.test.mjs",
+    "test:metrics": "pwsh -NoProfile -File tests/metrics-rollup.tests.ps1",
+    "test": "npm run build && npm run test:extension && npm run test:contract && npm run test:cli && npm run test:metrics"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

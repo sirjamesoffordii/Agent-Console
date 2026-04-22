@@ -8,7 +8,12 @@ on:
 
 jobs:
   test:
-    runs-on: windows-latest
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -23,6 +28,30 @@ jobs:
       - name: PS contract tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/agent-contract.tests.ps1
+      - name: CLI smoke
+        shell: pwsh
+        run: |
+          node ./bin/ac.cjs --help
+          node ./bin/ac.cjs status --json --repo .
+      - name: CLI tests
+        run: node tests/cli.test.mjs
+      - name: Metrics rollup tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/metrics-rollup.tests.ps1
+
+  package:
+    name: package vsix
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install deps
+        run: npm ci
+      - name: Build
+        run: npm run build
       - name: Package VSIX
         run: npm run package
       - name: Upload VSIX artifact

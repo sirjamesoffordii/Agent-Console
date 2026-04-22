@@ -96,6 +96,7 @@ type RowSnapshot = {
   paused: boolean;
   autoSend: boolean;
   stopReason: string;
+  stopReasonSeverity: 'legit' | 'error' | 'early' | 'stale' | 'unknown';
   nextPromptPreview: string;
   health: 'green' | 'amber' | 'red';
   ghCore: string;
@@ -374,6 +375,20 @@ function deriveStopReason(events: ActivityLine[]): string {
   return followThrough ? `[legit] ${tail}` : tail;
 }
 
+/**
+ * Read the `[legit] / [error] / [early] / [stale]` prefix that
+ * `deriveStopReason` emits back out into a structured severity level. Callers
+ * use this both to color the stop-reason pill in the webview and to escalate
+ * role health when the classifier flags real trouble.
+ */
+function classifyStopReasonSeverity(stopReason: string): RowSnapshot['stopReasonSeverity'] {
+  if (stopReason.startsWith('[error]')) return 'error';
+  if (stopReason.startsWith('[early]')) return 'early';
+  if (stopReason.startsWith('[legit]')) return 'legit';
+  if (stopReason.startsWith('[stale]')) return 'stale';
+  return 'unknown';
+}
+
 function snapshot(repoRoot: string, role: RoleEntry, options: ConsoleOptions): RowSnapshot {
   // Pick the state root with the freshest state.json for this role, so the
   // console stays correct when role windows write to their own worktrees
@@ -429,6 +444,7 @@ function snapshot(repoRoot: string, role: RoleEntry, options: ConsoleOptions): R
 
   const events = tailActivity(stateRoot, options.agentStateDir, role.id, 5);
   const stopReason = deriveStopReason(events);
+  const stopReasonSeverity = classifyStopReasonSeverity(stopReason);
 
   const rateLimit = readJson<RateLimitFile>(path.join(stateRoot, options.agentStateDir, role.id, 'ratelimit.json'));
   let ghCore = '—';
@@ -460,6 +476,13 @@ function snapshot(repoRoot: string, role: RoleEntry, options: ConsoleOptions): R
   else if (windowOpen) health = 'amber';
   else if (freshActivity) health = 'amber';
   else health = 'red';
+
+  // Severity escalation: if the latest classified stop-reason says the agent
+  // errored or early-abandoned, force health to red even if the window is
+  // still open. Operators must notice these; they don't self-heal.
+  if (!paused && (stopReasonSeverity === 'error' || stopReasonSeverity === 'early')) {
+    health = 'red';
+  }
 
   let chatState: RowSnapshot['chatState'] = 'unknown';
   if (ageSec < 0) chatState = 'unknown';
@@ -498,6 +521,7 @@ function snapshot(repoRoot: string, role: RoleEntry, options: ConsoleOptions): R
     paused,
     autoSend,
     stopReason,
+    stopReasonSeverity,
     nextPromptPreview,
     health,
     ghCore,
@@ -570,7 +594,7 @@ function renderHtml(rows: RowSnapshot[], nonce: string, issueUrlTemplate?: strin
       <td>${issueCell(row.issue, row.role, issueUrlTemplate)}</td>
       <td><code>${escapeHtml(row.branch || '—')}</code></td>
       <td>${ghCell}</td>
-      <td><small>${escapeHtml(row.stopReason || '—')}</small></td>
+      <td><span class="stop-pill stop-${row.stopReasonSeverity}">${escapeHtml(row.stopReasonSeverity)}</span> <small>${escapeHtml(row.stopReason || '—')}</small></td>
       <td class="prompt-cell">
         <textarea id="${promptId}" data-role="${row.role}" rows="3" placeholder="Type the next prompt for this agent. Leave blank to use the spawn script default.">${promptVal}</textarea>
         <div class="prompt-actions">
@@ -612,10 +636,25 @@ function renderHtml(rows: RowSnapshot[], nonce: string, issueUrlTemplate?: strin
   .prompt-actions { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
   .prompt-actions button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 3px 10px; font-weight: 600; }
   .prompt-actions button.primary:hover { background: var(--vscode-button-hoverBackground); }
+  .stop-pill { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 10px; font-weight: 700; margin-right: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .stop-pill.stop-legit   { background: rgba(76, 175, 80, 0.2);  color: #4caf50; }
+  .stop-pill.stop-error   { background: rgba(244, 67, 54, 0.25); color: #f44336; }
+  .stop-pill.stop-early   { background: rgba(255, 152, 0, 0.25); color: #ff9800; }
+  .stop-pill.stop-stale   { background: rgba(158, 158, 158, 0.2); color: #9e9e9e; }
+  .stop-pill.stop-unknown { background: rgba(158, 158, 158, 0.15); color: #bdbdbd; }
+  .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; padding: 6px 8px; background: var(--vscode-editorWidget-background, rgba(255,255,255,0.03)); border: 1px solid var(--vscode-widget-border, #444); border-radius: 4px; }
+  .toolbar .spacer { flex: 1; }
+  .toolbar .danger { background: rgba(244, 67, 54, 0.15); color: #f44336; border: 1px solid rgba(244, 67, 54, 0.4); }
 </style>
 </head>
 <body>
 <h1>${PANEL_TITLE}</h1>
+<div class="toolbar">
+  <button data-act="pause-all" class="danger" title="Pause every registered role (writes agent-control.json)">Pause All</button>
+  <button data-act="resume-all" title="Resume every registered role">Resume All</button>
+  <span class="spacer"></span>
+  <small>${rows.length} role${rows.length === 1 ? '' : 's'} registered</small>
+</div>
 <table>
   <thead>
     <tr><th>Role</th><th>GH Account</th><th>Window</th><th>Custom Agent</th><th>Chat</th><th>Issue</th><th>Branch</th><th>GH (core)</th><th>Stop Reason</th><th>Next Prompt &amp; Controls</th></tr>
@@ -782,7 +821,24 @@ async function handleAction(
   msg: { act: string; role: string; issue?: string; prompt?: string },
   refresh: () => void,
 ): Promise<void> {
-  if (!msg.role || !msg.act) return;
+  if (!msg.act) return;
+
+  // Global kill-switch actions operate on every registered role in one write.
+  if (msg.act === 'pause-all' || msg.act === 'resume-all') {
+    const control = readControl(repoRoot, options.agentStateDir);
+    const roles = readRoles(repoRoot, options.rolesFile);
+    if (msg.act === 'pause-all') {
+      control.paused = control.paused ?? {};
+      for (const r of roles) control.paused[r.id] = true;
+    } else {
+      control.paused = {};
+    }
+    writeControl(repoRoot, options.agentStateDir, control);
+    refresh();
+    return;
+  }
+
+  if (!msg.role) return;
 
   switch (msg.act) {
     case 'pause': {
@@ -859,4 +915,5 @@ export const __test = {
   matchesRoleWindow,
   normalizeWindowText,
   deriveStopReason,
+  classifyStopReasonSeverity,
 };
