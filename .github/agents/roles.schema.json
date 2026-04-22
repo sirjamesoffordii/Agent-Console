@@ -1,0 +1,59 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Agent Console Role Manifest",
+  "type": "object",
+  "required": ["version", "roles"],
+  "properties": {
+    "version": { "const": 1 },
+    "description": { "type": "string" },
+    "roles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "shortId", "displayName"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9]*Agent$",
+            "description": "Canonical role id (PascalCase, ends with 'Agent')."
+          },
+          "shortId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4,
+            "description": "Short tag shown in the console header (PE, SE, QA, PD)."
+          },
+          "displayName": { "type": "string" },
+          "agentFile": {
+            "type": "string",
+            "description": "Workspace-relative path to the agent's .agent.md instruction file."
+          },
+          "spawnScript": {
+            "type": "string",
+            "description": "Workspace-relative path to the pwsh spawn script invoked by Console/Tray."
+          },
+          "ghConfigDir": {
+            "type": "string",
+            "description": "Absolute GH CLI config dir ($env:GH_CONFIG_DIR) for this role's token."
+          },
+          "userDataDir": {
+            "type": "string",
+            "description": "Absolute VS Code user-data-dir for this role's window."
+          },
+          "cadence": {
+            "type": "string",
+            "enum": [
+              "continuous",
+              "scheduled:daily",
+              "scheduled:weekly",
+              "scheduled:persona-rotation",
+              "manual"
+            ],
+            "description": "How this role is driven. Continuous = auto-respawn; scheduled = run on timer; manual = operator-fired only."
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  }
+}

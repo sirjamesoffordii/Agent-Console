@@ -54,6 +54,12 @@ type RateLimitFile = {
   resources?: { core?: RateBucket; search?: RateBucket; graphql?: RateBucket };
 };
 
+type EditorWindowInfo = {
+  name: string;
+  commandLine: string;
+  mainWindowTitle: string;
+};
+
 function stableAgentToolsDir(): string | undefined {
   const explicit = (process.env.AGENT_CONSOLE_TOOLS_DIR ?? '').trim();
   if (explicit.length > 0) return explicit;
@@ -147,24 +153,63 @@ function writeControl(repoRoot: string, agentStateDir: string, ctrl: AgentContro
 // Window + agent-file detection (Windows-only, cached 4s)
 // ---------------------------------------------------------------------------
 
-let _windowCache: { at: number; cmdLines: string[] } = { at: 0, cmdLines: [] };
+let _windowCache: { at: number; windows: EditorWindowInfo[] } = { at: 0, windows: [] };
 // Cache the window list for longer than the 5s UI refresh so we only shell
 // out to PowerShell once every ~2-3 polls. The data changes slowly (windows
 // opening/closing), so a stale read is fine and it keeps background CPU down.
 const WINDOW_CACHE_TTL_MS = 12_000;
 
-function listInsidersCmdLines(): string[] {
+function normalizeWindowText(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function buildWindowMatchNeedles(role: RoleEntry): string[] {
+  const values = new Set<string>();
+  const add = (value?: string) => {
+    const trimmed = (value ?? '').trim();
+    if (trimmed.length === 0) return;
+    values.add(trimmed.toLowerCase());
+    const normalized = normalizeWindowText(trimmed);
+    if (normalized.length >= 5) values.add(normalized);
+  };
+
+  add(role.userDataDir);
+  if (role.userDataDir) add(path.basename(role.userDataDir));
+  add(role.id);
+  add(role.displayName);
+  if (role.agentFile) add(path.basename(role.agentFile, path.extname(role.agentFile)));
+
+  return [...values];
+}
+
+function matchesRoleWindow(role: RoleEntry, window: EditorWindowInfo): boolean {
+  const haystack = `${window.commandLine}\n${window.mainWindowTitle}`.toLowerCase();
+  const normalizedHaystack = normalizeWindowText(haystack);
+  return buildWindowMatchNeedles(role).some((needle) => {
+    if (needle.length >= 3 && haystack.includes(needle)) return true;
+    return needle.length >= 5 && normalizedHaystack.includes(needle);
+  });
+}
+
+function listEditorWindows(): EditorWindowInfo[] {
   if (process.platform !== 'win32') return [];
   const now = Date.now();
-  if (now - _windowCache.at < WINDOW_CACHE_TTL_MS) return _windowCache.cmdLines;
+  if (now - _windowCache.at < WINDOW_CACHE_TTL_MS) return _windowCache.windows;
   // wmic was removed from Windows 11 24H2+, so we use PowerShell + CIM instead.
-  // Filter in the pipeline (not -Filter) to avoid nested-quote escaping issues
-  // when execFileSync passes the -Command arg through to PowerShell.
+  // Scan only top-level editor processes (no `--type=...` helpers), then join
+  // to Get-Process for the visible window title. That lets us recognize windows
+  // that do not advertise a dedicated `--user-data-dir` but do expose the role
+  // or custom agent name in their title.
   const ps =
+    "$editorNames = @('Code - Insiders.exe', 'Code.exe', 'Cursor.exe', 'Code - OSS.exe'); " +
+    "@(" +
     "Get-CimInstance Win32_Process | " +
-    "Where-Object { $_.Name -eq 'Code - Insiders.exe' } | " +
-    "ForEach-Object { $_.CommandLine } | Where-Object { $_ } | " +
-    "ForEach-Object { $_ + [char]0 }";
+    "Where-Object { $editorNames -contains $_.Name -and $_.CommandLine -and $_.CommandLine -notmatch ' --type=' } | " +
+    "ForEach-Object { " +
+    "  $title = ''; " +
+    "  try { $title = (Get-Process -Id $_.ProcessId -ErrorAction Stop).MainWindowTitle } catch { } " +
+    "  [pscustomobject]@{ Name = $_.Name; CommandLine = $_.CommandLine; MainWindowTitle = $title } " +
+    "}) | ConvertTo-Json -Compress";
   const tryExec = (exe: string): string | null => {
     try {
       return cp.execFileSync(exe, ['-NoProfile', '-NonInteractive', '-Command', ps], {
@@ -181,25 +226,24 @@ function listInsidersCmdLines(): string[] {
   };
   const out = tryExec('pwsh') ?? tryExec('powershell');
   if (out === null) {
-    _windowCache = { at: now, cmdLines: [] };
+    _windowCache = { at: now, windows: [] };
     return [];
   }
-  const cmdLines = out
-    .split('\u0000')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  _windowCache = { at: now, cmdLines };
-  return cmdLines;
+  try {
+    const parsed = JSON.parse(out) as EditorWindowInfo | EditorWindowInfo[] | null;
+    const windows = (Array.isArray(parsed) ? parsed : parsed ? [parsed] : []).filter((entry) =>
+      !!entry && typeof entry.commandLine === 'string' && typeof entry.mainWindowTitle === 'string',
+    );
+    _windowCache = { at: now, windows };
+    return windows;
+  } catch {
+    _windowCache = { at: now, windows: [] };
+    return [];
+  }
 }
 
-function isWindowOpen(userDataDir?: string): boolean {
-  if (!userDataDir) return false;
-  const a = userDataDir.replace(/\//g, '\\').toLowerCase();
-  const b = userDataDir.replace(/\\/g, '/').toLowerCase();
-  return listInsidersCmdLines().some((cmd) => {
-    const lc = cmd.toLowerCase();
-    return lc.includes(a) || lc.includes(b);
-  });
+function isWindowOpen(role: RoleEntry): boolean {
+  return listEditorWindows().some((window) => matchesRoleWindow(role, window));
 }
 
 function checkAgentFile(repoRoot: string, agentFile?: string): { ok: boolean; name: string } {
@@ -267,12 +311,67 @@ function tailActivity(repoRoot: string, agentStateDir: string, role: string, n =
   }
 }
 
+/**
+ * Classify why an agent is idle/stopped so the operator can tell the
+ * difference between "legitimately waiting" (green/amber) and
+ * "abandoned mid-turn" (red).
+ *
+ * Returned string is always prefixed with one of:
+ *   [legit]  — a clean stopping point (awaiting input, PR opened, paused)
+ *   [error]  — a recorded error event
+ *   [early]  — chat turn started but no tool/command follow-through
+ *   [stale]  — activity file has no events at all
+ *
+ * Callers treat the prefix as a structured signal; the tail is human prose.
+ */
 function deriveStopReason(events: ActivityLine[]): string {
+  if (events.length === 0) return '[stale] no activity recorded';
+
   const errors = events.filter((event) => event.type === 'error');
-  if (errors.length > 0) return errors[errors.length - 1].summary ?? 'error';
+  if (errors.length > 0) {
+    const last = errors[errors.length - 1];
+    return `[error] ${(last.summary ?? 'error').slice(0, 80)}`;
+  }
+
   const last = events[events.length - 1];
-  if (!last) return '';
-  return `${last.type ?? '?'}: ${last.summary ?? ''}`.slice(0, 80);
+  const lastSummary = (last.summary ?? '').toLowerCase();
+  const lastType = last.type ?? '?';
+
+  // Legitimate stopping points — these are signals the agent intentionally
+  // yielded rather than crashed.
+  const legitimateMarkers = [
+    'task_complete',
+    'awaiting',
+    'waiting for',
+    'pr opened',
+    'pr merged',
+    'paused',
+    'no-op',
+    'nothing to do',
+    'idle',
+  ];
+  if (legitimateMarkers.some((marker) => lastSummary.includes(marker))) {
+    return `[legit] ${lastType}: ${last.summary ?? ''}`.slice(0, 80);
+  }
+
+  // Early-abandon heuristic: a chat turn started but never produced any
+  // tool call, task run, or turn-end event. That matches the "agent stopped
+  // responding mid-stream" pattern the operator needs to notice.
+  const startedTurn = events.find((event) => event.type === 'chat.turn.start');
+  const followThrough = events.some((event) =>
+    event.type === 'chat.turn.end' ||
+    event.type === 'tool.call' ||
+    event.type === 'command.run',
+  );
+  if (startedTurn && !followThrough) {
+    return `[early] chat turn started, no follow-through (${(startedTurn.summary ?? '').slice(0, 40)})`;
+  }
+
+  // Fall through: just surface the last event as best effort. If it names a
+  // terminal command or tool call, prefix [legit] since the agent made it
+  // past the "started turn, vanished" signature.
+  const tail = `${lastType}: ${last.summary ?? ''}`.slice(0, 80);
+  return followThrough ? `[legit] ${tail}` : tail;
 }
 
 function snapshot(repoRoot: string, role: RoleEntry, options: ConsoleOptions): RowSnapshot {
@@ -346,7 +445,7 @@ function snapshot(repoRoot: string, role: RoleEntry, options: ConsoleOptions): R
 
   const ghAcct = readGhAccount(role.ghConfigDir);
   const promptOverride = readPromptOverride(stateRoot, options.agentStateDir, role.id);
-  const windowOpen = isWindowOpen(role.userDataDir);
+  const windowOpen = isWindowOpen(role);
   const agentFileInfo = checkAgentFile(repoRoot, role.agentFile);
 
   // Role health reflects the operator's real question — "is this agent alive?"
@@ -754,3 +853,10 @@ async function handleAction(
     }
   }
 }
+
+export const __test = {
+  buildWindowMatchNeedles,
+  matchesRoleWindow,
+  normalizeWindowText,
+  deriveStopReason,
+};

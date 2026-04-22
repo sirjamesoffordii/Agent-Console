@@ -1,0 +1,47 @@
+{
+  "$schema": "./roles.schema.json",
+  "version": 1,
+  "description": "Canonical role manifest for the Agent Console. Adding a new role requires only editing this file, creating the GH account, and spawning — no code changes to the extension, tray, or console.",
+  "roles": [
+    {
+      "id": "PrincipalEngineerAgent",
+      "shortId": "PE",
+      "displayName": "Principal Engineer",
+      "agentFile": ".github/agents/principal-engineer.agent.md",
+      "spawnScript": "scripts/spawn-pe.ps1",
+      "ghConfigDir": "C:/Users/sirja/.gh-PrincipalEngineerAgent",
+      "userDataDir": "C:/Dev/vscode-agent-pe",
+      "cadence": "continuous"
+    },
+    {
+      "id": "SeniorEngineerAgent",
+      "shortId": "SE",
+      "displayName": "Senior Engineer",
+      "agentFile": ".github/agents/senior-engineer.agent.md",
+      "spawnScript": "scripts/spawn-se.ps1",
+      "ghConfigDir": "C:/Users/sirja/.gh-SeniorEngineerAgent",
+      "userDataDir": "C:/Dev/vscode-agent-se",
+      "cadence": "continuous"
+    },
+    {
+      "id": "QualityAssuranceAgent",
+      "shortId": "QA",
+      "displayName": "Quality Assurance",
+      "agentFile": ".github/agents/quality-assurance-agent.agent.md",
+      "spawnScript": "scripts/spawn-qa.ps1",
+      "ghConfigDir": "C:/Users/sirja/.gh-QualityAssuranceAgent",
+      "userDataDir": "C:/Dev/vscode-agent-qa",
+      "cadence": "scheduled:persona-rotation"
+    },
+    {
+      "id": "ProductDesignAgent",
+      "shortId": "PD",
+      "displayName": "Product Design",
+      "agentFile": ".github/agents/product-design.agent.md",
+      "spawnScript": "scripts/spawn-pd.ps1",
+      "ghConfigDir": "C:/Users/sirja/.gh-ProductDesignAgent",
+      "userDataDir": "C:/Dev/vscode-agent-pd",
+      "cadence": "scheduled:daily"
+    }
+  ]
+}

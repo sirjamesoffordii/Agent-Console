@@ -2,3 +2,6 @@ node_modules/
 dist/
 *.vsix
 *.tsbuildinfo
+.agent/
+.gh-created-issues.txt
+.vscode/settings.json

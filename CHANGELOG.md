@@ -5,6 +5,18 @@ All notable changes to the **Agent Console** extension will be documented in thi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.12] - 2026-04-22
+
+### Added
+- **Role registry**: canonical `.github/agents/roles.json` + `roles.schema.json` covering the four persistent roles (Principal Engineer, Senior Engineer, Quality Assurance, Product Design). Adding a new role is now a pure JSON edit.
+- **Role instruction files**: `.github/agents/principal-engineer.agent.md`, `senior-engineer.agent.md`, `product-design.agent.md`, `quality-assurance-agent.agent.md`.
+- **Spawn scripts**: `scripts/spawn-common.ps1` plus per-role stubs (`spawn-pe.ps1`, `spawn-se.ps1`, `spawn-qa.ps1`, `spawn-pd.ps1`) that honor `prompt-override.txt` and relaunch the role's VS Code window with the correct `--user-data-dir`.
+- **Telemetry writer**: `scripts/telemetry-ratelimit.ps1` pulls `gh api rate_limit` per role and emits the `ratelimit.json` + `usage.json` files the console consumes.
+- **Respawn scheduler**: `scripts/schedule-next-action.ps1` reads each role's cadence (`continuous`, `scheduled:daily`, `scheduled:persona-rotation`, etc.) and writes `next-prompt.json` + `next-action.json` with a planned ETA epoch.
+
+### Changed
+- **Stop-reason classifier**: `deriveStopReason` now prefixes every reason with a structured tag: `[legit]`, `[error]`, `[early]` (chat turn started with no follow-through), or `[stale]`. Operators can now tell legitimate stopping points apart from early abandonment at a glance.
+
 ## [0.1.11] - 2026-04-21
 
 ### Changed

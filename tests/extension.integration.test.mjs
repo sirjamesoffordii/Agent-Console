@@ -342,6 +342,43 @@ console.log('\n== console.ts openConsole() integration ==');
   fs.rmSync(root, { recursive: true, force: true });
 }
 
+// --- Test 6b: role window matching recognizes titles and custom agent names
+{
+  const role = {
+    id: 'QualityAssuranceAgent',
+    shortId: 'QA',
+    displayName: 'Quality Assurance Agent',
+    agentFile: '.github/chatmodes/quality-assurance-agent.agent',
+  };
+
+  ok(
+    'window detection matches role display name in title',
+    consoleMod.__test.matchesRoleWindow(role, {
+      name: 'Code - Insiders.exe',
+      commandLine: '"Code - Insiders.exe" -n C:/Dev/Partner Path',
+      mainWindowTitle: 'Quality Assurance Agent - Partner Path',
+    }),
+  );
+
+  ok(
+    'window detection matches custom agent file name in title',
+    consoleMod.__test.matchesRoleWindow(role, {
+      name: 'Code - Insiders.exe',
+      commandLine: '"Code - Insiders.exe" -n C:/Dev/Partner Path',
+      mainWindowTitle: 'quality-assurance-agent - Agent workflow task assignment',
+    }),
+  );
+
+  ok(
+    'window detection rejects unrelated windows',
+    !consoleMod.__test.matchesRoleWindow(role, {
+      name: 'Code - Insiders.exe',
+      commandLine: '"Code - Insiders.exe" -n C:/Dev/Other Repo',
+      mainWindowTitle: 'Senior Engineer Agent - Other Repo',
+    }),
+  );
+}
+
 // --- Test 7: Pause writes agent-control.json; Resume clears
 await (async () => {
   const root = mkWorkspace();
@@ -427,6 +464,27 @@ await (async () => {
   ok('stale role shows red dot', panel._html.includes('dot red'));
   panel.dispose();
   fs.rmSync(root, { recursive: true, force: true });
+}
+
+// --- Test 9b: deriveStopReason classifier
+{
+  const derive = consoleMod.__test.deriveStopReason;
+  ok('no events → [stale]',
+    derive([]).startsWith('[stale]'));
+  ok('error event → [error]',
+    derive([{ type: 'error', summary: 'boom' }]).startsWith('[error]'));
+  ok('legit marker (task_complete) → [legit]',
+    derive([
+      { type: 'chat.turn.start', summary: 'start' },
+      { type: 'chat.turn.end', summary: 'task_complete: done' },
+    ]).startsWith('[legit]'));
+  ok('chat turn without follow-through → [early]',
+    derive([{ type: 'chat.turn.start', summary: 'kickoff: manual' }]).startsWith('[early]'));
+  ok('tool call follow-through → [legit]',
+    derive([
+      { type: 'chat.turn.start', summary: 'start' },
+      { type: 'tool.call', summary: 'edit_file' },
+    ]).startsWith('[legit]'));
 }
 
 // --- Test 10: role detection via AGENT_CONSOLE_ROLE env
